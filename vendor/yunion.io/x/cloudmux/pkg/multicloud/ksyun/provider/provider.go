@@ -29,6 +29,10 @@ type SKsyunProviderFactory struct {
 	cloudprovider.SPublicCloudBaseProviderFactory
 }
 
+func (self *SKsyunProviderFactory) NeedSyncSkuFromCloud() bool {
+	return true
+}
+
 func (self *SKsyunProviderFactory) GetId() string {
 	return api.CLOUD_PROVIDER_KSYUN
 }

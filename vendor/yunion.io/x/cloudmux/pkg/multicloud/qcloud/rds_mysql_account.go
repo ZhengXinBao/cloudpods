@@ -41,6 +41,20 @@ type SMySQLInstanceAccount struct {
 	CreateTime         string
 }
 
+func mysqlInstanceOptionalError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if !strings.Contains(message, "code=operationdenied") ||
+		(!strings.Contains(message, "only supports for master") &&
+			!strings.Contains(message, "insttypenotsupport") &&
+			!strings.Contains(message, "当前类型实例不支持该操作")) {
+		return err
+	}
+	return errors.Wrapf(cloudprovider.ErrNotSupported, "%s: %v", operation, err)
+}
+
 func (self *SMySQLInstanceAccount) GetName() string {
 	return self.User
 }
@@ -279,7 +293,7 @@ func (self *SRegion) DescribeMySQLAccounts(instanceId string, offset, limit int)
 	}
 	resp, err := self.cdbRequest("DescribeAccounts", params)
 	if err != nil {
-		return nil, 0, errors.Wrapf(err, "DescribeAccounts")
+		return nil, 0, errors.Wrapf(mysqlInstanceOptionalError("DescribeAccounts", err), "DescribeAccounts")
 	}
 	ret := []SMySQLInstanceAccount{}
 	err = resp.Unmarshal(&ret, "Items")

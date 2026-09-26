@@ -27,7 +27,7 @@ import (
 type SNodeGroup struct {
 	multicloud.SResourceBase
 	region *SRegion
-	AwsTags
+	Tags   map[string]string `json:"tags"`
 
 	ClusterName   string
 	NodegroupName string
@@ -65,43 +65,30 @@ func (self *SNodeGroup) Refresh() error {
 }
 
 func (self *SNodeGroup) GetStatus() string {
-	if len(self.Status) == 0 {
-		self.Refresh()
-	}
 	switch strings.ToLower(self.Status) {
 	case "active":
 		return api.KUBE_CLUSTER_STATUS_RUNNING
 	case "creating":
 		return api.KUBE_CLUSTER_STATUS_CREATING
+	case "", "degraded":
+		return api.KUBE_CLUSTER_STATUS_ABNORMAL
 	}
 	return strings.ToLower(self.Status)
 }
 
 func (self *SNodeGroup) GetMinInstanceCount() int {
-	if len(self.Subnets) == 0 {
-		self.Refresh()
-	}
 	return self.ScalingConfig.MinSize
 }
 
 func (self *SNodeGroup) GetMaxInstanceCount() int {
-	if len(self.Subnets) == 0 {
-		self.Refresh()
-	}
 	return self.ScalingConfig.MaxSize
 }
 
 func (self *SNodeGroup) GetDesiredInstanceCount() int {
-	if len(self.Subnets) == 0 {
-		self.Refresh()
-	}
 	return self.ScalingConfig.DesiredSize
 }
 
 func (self *SNodeGroup) GetRootDiskSizeGb() int {
-	if len(self.Subnets) == 0 {
-		self.Refresh()
-	}
 	return self.DiskSize
 }
 
@@ -110,16 +97,10 @@ func (self *SNodeGroup) Delete() error {
 }
 
 func (self *SNodeGroup) GetNetworkIds() []string {
-	if len(self.Subnets) == 0 {
-		self.Refresh()
-	}
 	return self.Subnets
 }
 
 func (self *SNodeGroup) GetInstanceTypes() []string {
-	if len(self.InstanceTypes) == 0 {
-		self.Refresh()
-	}
 	return self.InstanceTypes
 }
 
@@ -151,17 +132,32 @@ func (self *SRegion) GetNodegroups(cluster, nextToken string) ([]SNodeGroup, str
 	resource := fmt.Sprintf("/clusters/%s/node-groups", cluster)
 	err := self.eksRequest("ListNodegroups", resource, params, &ret)
 	if err != nil {
-		return nil, "", errors.Wrapf(err, "DescribeCluster")
+		return nil, "", errors.Wrapf(err, "ListNodegroups")
 	}
-	result := []SNodeGroup{}
-	for i := range ret.Nodegroups {
-		result = append(result, SNodeGroup{
-			region:        self,
-			ClusterName:   cluster,
-			NodegroupName: ret.Nodegroups[i],
-		})
+	result, err := describeNodegroups(ret.Nodegroups, func(name string) (*SNodeGroup, error) {
+		return self.GetNodegroup(cluster, name)
+	})
+	if err != nil {
+		return nil, "", err
 	}
 	return result, ret.NextToken, nil
+}
+
+// ListNodegroups supplies names only. Complete the inventory before returning
+// it so Describe failures are surfaced instead of lost inside value getters.
+func describeNodegroups(names []string, describe func(string) (*SNodeGroup, error)) ([]SNodeGroup, error) {
+	result := make([]SNodeGroup, 0, len(names))
+	for _, name := range names {
+		group, err := describe(name)
+		if err != nil {
+			return nil, errors.Wrapf(err, "DescribeNodegroup(%s)", name)
+		}
+		if group == nil || len(group.Status) == 0 {
+			return nil, fmt.Errorf("DescribeNodegroup(%s) returned no nodegroup status", name)
+		}
+		result = append(result, *group)
+	}
+	return result, nil
 }
 
 func (self *SRegion) DeleteNodegroup(cluster, name string) error {
@@ -176,5 +172,25 @@ func (self *SRegion) DeleteNodegroup(cluster, name string) error {
 }
 
 func (self *SNodeGroup) GetDescription() string {
-	return self.AwsTags.GetDescription()
+	return self.awsTags().GetDescription()
+}
+
+func (self *SNodeGroup) awsTags() *AwsTags {
+	tags := &AwsTags{}
+	for key, value := range self.Tags {
+		tags.Tags = append(tags.Tags, SAwsLbTag{Key: key, Value: value})
+	}
+	return tags
+}
+
+func (self *SNodeGroup) GetTags() (map[string]string, error) {
+	return self.awsTags().GetTags()
+}
+
+func (self *SNodeGroup) GetSysTags() map[string]string {
+	return self.awsTags().GetSysTags()
+}
+
+func (self *SNodeGroup) SetTags(tags map[string]string, replace bool) error {
+	return self.awsTags().SetTags(tags, replace)
 }

@@ -288,7 +288,14 @@ func (region *SRegion) GetImages(visibility string, imageIds []string, name stri
 	}
 
 	ret := []SImage{}
+	seenTokens := map[string]struct{}{}
 	for {
+		if token := params["NextToken"]; len(token) > 0 {
+			if _, ok := seenTokens[token]; ok {
+				return nil, fmt.Errorf("repeated NextToken %q", token)
+			}
+			seenTokens[token] = struct{}{}
+		}
 		resp, err := region.ecsRequest("DescribeImages", params)
 		if err != nil {
 			return nil, errors.Wrapf(err, "DescribeImages")

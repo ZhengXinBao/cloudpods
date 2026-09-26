@@ -60,7 +60,23 @@ func (self *SStoragecache) IsEmulated() bool {
 }
 
 func (self *SStoragecache) GetICloudImages() ([]cloudprovider.ICloudImage, error) {
-	return nil, cloudprovider.ErrNotImplemented
+	images := make([]SImage, 0)
+	for {
+		parts, total, err := self.region.GetImages("", "PUBLIC_IMAGE", nil, "", len(images), 50)
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetImages")
+		}
+		images = append(images, parts...)
+		if len(parts) == 0 || len(images) >= total {
+			break
+		}
+	}
+	ret := make([]cloudprovider.ICloudImage, 0, len(images))
+	for i := range images {
+		images[i].storageCache = self
+		ret = append(ret, &images[i])
+	}
+	return ret, nil
 }
 
 func (self *SStoragecache) GetICustomizedCloudImages() ([]cloudprovider.ICloudImage, error) {

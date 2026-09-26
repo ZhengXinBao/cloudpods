@@ -32,6 +32,10 @@ type SQcloudProviderFactory struct {
 	cloudprovider.SPublicCloudBaseProviderFactory
 }
 
+func (self *SQcloudProviderFactory) NeedSyncSkuFromCloud() bool {
+	return true
+}
+
 func (self *SQcloudProviderFactory) GetId() string {
 	return qcloud.CLOUD_PROVIDER_QCLOUD
 }

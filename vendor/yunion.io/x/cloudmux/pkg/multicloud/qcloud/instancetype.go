@@ -15,6 +15,11 @@
 package qcloud
 
 import (
+	"fmt"
+
+	api "yunion.io/x/cloudmux/pkg/apis"
+	"yunion.io/x/cloudmux/pkg/cloudprovider"
+	"yunion.io/x/cloudmux/pkg/multicloud"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/utils"
@@ -57,6 +62,48 @@ func (self *SRegion) GetInstanceTypes() ([]SInstanceType, error) {
 
 func (self *SInstanceType) memoryMB() int {
 	return int(self.Memory * 1024)
+}
+
+func newCloudSkuFromInstanceType(instanceType SInstanceType) *multicloud.SCloudSku {
+	if instanceType.InstanceType == "" || instanceType.CPU <= 0 || instanceType.Memory <= 0 {
+		return nil
+	}
+	sku := multicloud.NewSCloudSku(instanceType.InstanceType)
+	sku.InstanceTypeFamily = instanceType.InstanceFamily
+	sku.InstanceTypeCategory = instanceType.InstanceFamily
+	sku.CpuCoreCount = instanceType.CPU
+	sku.MemorySizeMB = instanceType.memoryMB()
+	sku.CpuArch = api.OS_ARCH_X86_64
+	if instanceType.GPU > 0 {
+		sku.GpuAttachable = true
+		sku.GpuCount = fmt.Sprintf("%d", instanceType.GPU)
+		sku.GpuMaxCount = instanceType.GPU
+	}
+	return sku
+}
+
+func (self *SRegion) GetISkus() ([]cloudprovider.ICloudSku, error) {
+	instanceTypes, err := self.GetInstanceTypes()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetInstanceTypes")
+	}
+	ret := make([]cloudprovider.ICloudSku, 0, len(instanceTypes))
+	seen := map[string]bool{}
+	for _, instanceType := range instanceTypes {
+		if instanceType.InstanceTypeState != "" && instanceType.InstanceTypeState != "AVAILABLE" {
+			continue
+		}
+		if seen[instanceType.InstanceType] {
+			continue
+		}
+		sku := newCloudSkuFromInstanceType(instanceType)
+		if sku == nil {
+			continue
+		}
+		seen[instanceType.InstanceType] = true
+		ret = append(ret, sku)
+	}
+	return ret, nil
 }
 
 type SLocalDiskType struct {

@@ -50,7 +50,16 @@ func (cache *SStoragecache) GetGlobalId() string {
 }
 
 func (cache *SStoragecache) GetICloudImages() ([]cloudprovider.ICloudImage, error) {
-	return nil, cloudprovider.ErrNotImplemented
+	images, err := cache.region.GetImages("", "system")
+	if err != nil {
+		return nil, err
+	}
+	ret := make([]cloudprovider.ICloudImage, 0, len(images))
+	for i := range images {
+		images[i].storageCache = cache
+		ret = append(ret, &images[i])
+	}
+	return ret, nil
 }
 
 func (cache *SStoragecache) GetICustomizedCloudImages() ([]cloudprovider.ICloudImage, error) {

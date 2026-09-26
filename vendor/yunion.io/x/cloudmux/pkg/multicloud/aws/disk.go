@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"yunion.io/x/jsonutils"
+	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
 	"yunion.io/x/pkg/utils"
 
@@ -272,6 +273,10 @@ func (self *SDisk) Reset(ctx context.Context, snapshotId string) (string, error)
 }
 
 func (self *SRegion) GetDisks(instanceId string, zoneId string, storageType string, diskIds []string) ([]SDisk, error) {
+	return getDisksWithRequest(instanceId, zoneId, storageType, diskIds, self.ec2Request)
+}
+
+func getDisksWithRequest(instanceId string, zoneId string, storageType string, diskIds []string, request func(string, map[string]string, interface{}) error) ([]SDisk, error) {
 	params := map[string]string{}
 	for i, diskId := range diskIds {
 		params[fmt.Sprintf("VolumeId.%d", i+1)] = diskId
@@ -301,12 +306,32 @@ func (self *SRegion) GetDisks(instanceId string, zoneId string, storageType stri
 			NextToken string  `xml:"nextToken"`
 		}{}
 
-		err := self.ec2Request("DescribeVolumes", params, &part)
+		err := request("DescribeVolumes", params, &part)
 		if err != nil {
+			if awsErr, ok := errors.Cause(err).(*sAwsError); ok && awsErr.Errors.Code == "InternalError" && len(zoneId) > 0 {
+				// Some AWS accounts return InternalError for availability-zone filters.
+				// Restart without that filter; a failed or partial inventory must never
+				// be interpreted as the zone having no disks.
+				log.Warningf("DescribeVolumes InternalError with zone %s; retry without availability-zone filter", zoneId)
+				allDisks, fallbackErr := getDisksWithRequest(instanceId, "", storageType, diskIds, request)
+				if fallbackErr != nil {
+					return nil, errors.Wrapf(fallbackErr, "DescribeVolumes fallback for zone %s", zoneId)
+				}
+				selected := make([]SDisk, 0)
+				for i := range allDisks {
+					if len(allDisks[i].AvailabilityZone) == 0 {
+						return nil, errors.Errorf("DescribeVolumes fallback: volume %s has no availability zone", allDisks[i].VolumeId)
+					}
+					if allDisks[i].AvailabilityZone == zoneId {
+						selected = append(selected, allDisks[i])
+					}
+				}
+				return selected, nil
+			}
 			return nil, errors.Wrapf(err, "DescribeVolumes")
 		}
 		disks = append(disks, part.VolumeSet...)
-		if len(part.VolumeSet) == 0 || len(part.NextToken) == 0 {
+		if len(part.NextToken) == 0 {
 			break
 		}
 		params["NextToken"] = part.NextToken

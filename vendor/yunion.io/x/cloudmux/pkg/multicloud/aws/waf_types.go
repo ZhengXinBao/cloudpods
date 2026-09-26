@@ -14,6 +14,8 @@
 
 package aws
 
+import "encoding/json"
+
 const (
 	wafTextTransformationTypeNone               = "NONE"
 	wafTextTransformationTypeLowercase          = "LOWERCASE"
@@ -136,10 +138,27 @@ type sWafRegexPatternSetReferenceStatement struct {
 	TextTransformations []sWafTextTransformation `json:"TextTransformations"`
 }
 
+// AWS encodes blob fields as base64 JSON strings. jsonutils otherwise treats a
+// string assigned to []byte as a single numeric element rather than base64.
+type sWafSearchString []byte
+
+func (s sWafSearchString) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]byte(s))
+}
+
+func (s *sWafSearchString) UnmarshalJSON(data []byte) error {
+	var value []byte
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*s = value
+	return nil
+}
+
 type sWafByteMatchStatement struct {
 	FieldToMatch         *sWafFieldToMatch        `json:"FieldToMatch"`
 	PositionalConstraint string                   `json:"PositionalConstraint"`
-	SearchString         []byte                   `json:"SearchString"`
+	SearchString         sWafSearchString         `json:"SearchString"`
 	TextTransformations  []sWafTextTransformation `json:"TextTransformations"`
 }
 

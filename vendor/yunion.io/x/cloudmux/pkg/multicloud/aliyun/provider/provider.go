@@ -31,6 +31,10 @@ type SAliyunProviderFactory struct {
 	cloudprovider.SPublicCloudBaseProviderFactory
 }
 
+func (self *SAliyunProviderFactory) NeedSyncSkuFromCloud() bool {
+	return true
+}
+
 func (self *SAliyunProviderFactory) GetId() string {
 	return aliyun.CLOUD_PROVIDER_ALIYUN
 }

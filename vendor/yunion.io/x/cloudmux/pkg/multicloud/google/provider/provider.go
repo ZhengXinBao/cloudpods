@@ -56,7 +56,7 @@ func (self *SGoogleProviderFactory) IsClouduserBelongCloudprovider() bool {
 }
 
 func (self *SGoogleProviderFactory) NeedSyncSkuFromCloud() bool {
-	return false
+	return true
 }
 
 func (self *SGoogleProviderFactory) ValidateCreateCloudaccountData(ctx context.Context, input cloudprovider.SCloudaccountCredential) (cloudprovider.SCloudaccount, error) {

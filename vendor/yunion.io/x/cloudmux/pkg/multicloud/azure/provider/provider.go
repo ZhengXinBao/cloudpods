@@ -32,6 +32,10 @@ type SAzureProviderFactory struct {
 	cloudprovider.SPublicCloudBaseProviderFactory
 }
 
+func (self *SAzureProviderFactory) NeedSyncSkuFromCloud() bool {
+	return true
+}
+
 func (self *SAzureProviderFactory) GetId() string {
 	return azure.CLOUD_PROVIDER_AZURE
 }

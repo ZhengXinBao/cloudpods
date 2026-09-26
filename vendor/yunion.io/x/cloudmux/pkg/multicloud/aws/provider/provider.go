@@ -30,6 +30,10 @@ type SAwsProviderFactory struct {
 	cloudprovider.SPublicCloudBaseProviderFactory
 }
 
+func (self *SAwsProviderFactory) NeedSyncSkuFromCloud() bool {
+	return true
+}
+
 func (self *SAwsProviderFactory) GetId() string {
 	return aws.CLOUD_PROVIDER_AWS
 }

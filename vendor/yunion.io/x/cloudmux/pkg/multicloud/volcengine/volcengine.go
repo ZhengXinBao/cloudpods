@@ -277,7 +277,20 @@ func (self *sCred) Do(req *http.Request) (*http.Response, error) {
 
 func (client *SVolcEngineClient) monitorRequest(regionId, apiName string, params map[string]interface{}) (jsonutils.JSONObject, error) {
 	cred := client.getSdkCredential(regionId, VOLCENGINE_SERVICE_MONITOR, "")
-	return client.jsonRequest(cred, VOLCENGINE_API, VOLCENGINE_MONITOR_API_VERSION, apiName, params)
+	return client.jsonRequest(cred, client.getAPIEndpoint(regionId, VOLCENGINE_SERVICE_MONITOR), VOLCENGINE_MONITOR_API_VERSION, apiName, params)
+}
+
+func (client *SVolcEngineClient) getAPIEndpoint(region, service string) string {
+	if region == "" {
+		return VOLCENGINE_API
+	}
+	switch service {
+	case VOLCENGINE_SERVICE_ECS, VOLCENGINE_SERVICE_VPC, VOLCENGINE_SERVICE_NAT, VOLCENGINE_SERVICE_STORAGE, VOLCENGINE_SERVICE_MONITOR:
+		service = strings.ReplaceAll(service, "_", "-")
+		return fmt.Sprintf("%s.%s.volcengineapi.com", service, region)
+	default:
+		return VOLCENGINE_API
+	}
 }
 
 func (client *SVolcEngineClient) jsonRequest(cred sdk.Credentials, domain string, apiVersion string, apiName string, params interface{}) (jsonutils.JSONObject, error) {
@@ -435,7 +448,7 @@ func (self *sVolcError) Error() string {
 
 func (client *SVolcEngineClient) ecsRequest(region string, apiName string, params map[string]string) (jsonutils.JSONObject, error) {
 	cred := client.getDefaultCredential(region, VOLCENGINE_SERVICE_ECS)
-	return client.jsonRequest(cred, VOLCENGINE_API, VOLCENGINE_API_VERSION, apiName, params)
+	return client.jsonRequest(cred, client.getAPIEndpoint(region, VOLCENGINE_SERVICE_ECS), VOLCENGINE_API_VERSION, apiName, params)
 }
 
 func (client *SVolcEngineClient) iam20210801Request(region string, apiName string, params map[string]string) (jsonutils.JSONObject, error) {

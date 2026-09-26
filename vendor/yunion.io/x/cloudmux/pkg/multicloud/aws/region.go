@@ -295,6 +295,11 @@ func (self *SRegion) GetGlobalId() string {
 	return fmt.Sprintf("%s/%s", self.client.GetAccessEnv(), self.RegionId)
 }
 
+// GetRegionOptInStatus reports DescribeRegions metadata for this account.
+func (self *SRegion) GetRegionOptInStatus() string {
+	return self.OptInStatus
+}
+
 func (self *SRegion) GetStatus() string {
 	return api.CLOUD_REGION_STATUS_INSERVER
 }

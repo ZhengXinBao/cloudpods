@@ -59,14 +59,19 @@ type SDBInstanceDelegatedSubnetArguments struct {
 	SubnetArmResourceId string `json:"subnetArmResourceId"`
 }
 
+type SDBInstanceNetworkProperties struct {
+	DelegatedSubnetResourceId string `json:"delegatedSubnetResourceId"`
+}
+
 type SDBInstanceProperties struct {
-	AdministratorLogin       string                    `json:"administratorLogin"`
-	StorageProfile           SDBInstanceStorageProfile `json:"storageProfile"`
-	Version                  string                    `json:"version"`
-	SslEnforcement           string                    `json:"sslEnforcement"`
-	UserVisibleState         string                    `json:"userVisibleState"`
-	FullyQualifiedDomainName string                    `json:"fullyQualifiedDomainName"`
-	EarliestRestoreDate      time.Time                 `json:"earliestRestoreDate"`
+	Network                  SDBInstanceNetworkProperties `json:"network"`
+	AdministratorLogin       string                       `json:"administratorLogin"`
+	StorageProfile           SDBInstanceStorageProfile    `json:"storageProfile"`
+	Version                  string                       `json:"version"`
+	SslEnforcement           string                       `json:"sslEnforcement"`
+	UserVisibleState         string                       `json:"userVisibleState"`
+	FullyQualifiedDomainName string                       `json:"fullyQualifiedDomainName"`
+	EarliestRestoreDate      time.Time                    `json:"earliestRestoreDate"`
 
 	ReplicationRole          string                              `json:"replicationRole"`
 	MasterServerId           string                              `json:"masterServerId"`
@@ -326,15 +331,26 @@ func (rds *SDBInstance) GetConnectionStr() string {
 // func (rds *SDBInstance) GetInternalConnectionStr() string
 
 func (rds *SDBInstance) GetIVpcId() string {
-	splited := strings.Split(rds.Properties.DelegatedSubnetArguments.SubnetArmResourceId, "/subnets")
-	return splited[0]
+	return strings.Split(rds.getDelegatedSubnetId(), "/subnets/")[0]
+}
+
+func (rds *SDBInstance) getDelegatedSubnetId() string {
+	subnetId := rds.Properties.Network.DelegatedSubnetResourceId
+	if len(subnetId) == 0 {
+		subnetId = rds.Properties.DelegatedSubnetArguments.SubnetArmResourceId
+	}
+	return strings.ToLower(subnetId)
 }
 
 func (rds *SDBInstance) GetDBNetworks() ([]cloudprovider.SDBInstanceNetwork, error) {
-	result := []cloudprovider.SDBInstanceNetwork{}
-	delegateNet := cloudprovider.SDBInstanceNetwork{NetworkId: rds.Properties.DelegatedSubnetArguments.SubnetArmResourceId}
-	result = append(result, delegateNet)
-	return result, nil
+	subnetId := rds.getDelegatedSubnetId()
+	if len(subnetId) == 0 {
+		// No delegated subnet metadata is not an authoritative empty network list:
+		// other connection types (for example private endpoints) may still exist.
+		return nil, cloudprovider.ErrNotSupported
+	}
+	// Azure returns the delegated subnet without the managed database's IP.
+	return []cloudprovider.SDBInstanceNetwork{{NetworkId: subnetId}}, nil
 }
 
 func (rds *SDBInstance) GetZone1Id() string {

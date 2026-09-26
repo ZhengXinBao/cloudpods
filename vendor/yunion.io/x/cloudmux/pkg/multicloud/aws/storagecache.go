@@ -75,7 +75,16 @@ func (self *SStoragecache) GetICustomizedCloudImages() ([]cloudprovider.ICloudIm
 }
 
 func (self *SStoragecache) GetICloudImages() ([]cloudprovider.ICloudImage, error) {
-	return nil, cloudprovider.ErrNotImplemented
+	images, err := self.region.GetImages("", ImageOwnerSystem, nil, "", "hvm", nil, "", true)
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetImages")
+	}
+	ret := make([]cloudprovider.ICloudImage, 0, len(images))
+	for i := range images {
+		images[i].storageCache = self
+		ret = append(ret, &images[i])
+	}
+	return ret, nil
 }
 
 func (self *SStoragecache) GetIImageById(extId string) (cloudprovider.ICloudImage, error) {

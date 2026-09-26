@@ -30,8 +30,8 @@ import (
 
 type SKubeCluster struct {
 	multicloud.SResourceBase
-	AwsTags
 	region *SRegion
+	Tags   map[string]string `json:"tags"`
 
 	Name               string
 	Arn                string  `json:"arn"`
@@ -74,6 +74,28 @@ type ClusterLogging struct {
 	Enabled bool     `json:"enabled"`
 }
 
+// EKS uses a tag dictionary, unlike the key/value arrays used by EC2 and ELB.
+// Adapt it to the shared AWS tag policy for metadata and reserved-tag filtering.
+func (self *SKubeCluster) awsTags() *AwsTags {
+	tags := &AwsTags{}
+	for key, value := range self.Tags {
+		tags.Tags = append(tags.Tags, SAwsLbTag{Key: key, Value: value})
+	}
+	return tags
+}
+
+func (self *SKubeCluster) GetTags() (map[string]string, error) {
+	return self.awsTags().GetTags()
+}
+
+func (self *SKubeCluster) GetSysTags() map[string]string {
+	return self.awsTags().GetSysTags()
+}
+
+func (self *SKubeCluster) SetTags(tags map[string]string, replace bool) error {
+	return self.awsTags().SetTags(tags, replace)
+}
+
 func (self *SKubeCluster) GetName() string {
 	return self.Name
 }
@@ -91,14 +113,13 @@ func (self *SKubeCluster) GetEnabled() bool {
 }
 
 func (self *SKubeCluster) GetStatus() string {
-	if len(self.Status) == 0 {
-		self.Refresh()
-	}
 	switch self.Status {
 	case "ACTIVE":
 		return api.KUBE_CLUSTER_STATUS_RUNNING
 	case "DELETING":
 		return api.KUBE_CLUSTER_STATUS_DELETING
+	case "", "FAILED":
+		return api.KUBE_CLUSTER_STATUS_ABNORMAL
 	default:
 		return strings.ToLower(self.Status)
 	}
@@ -139,16 +160,23 @@ users:
 }
 
 func (self *SKubeCluster) GetIKubeNodePools() ([]cloudprovider.ICloudKubeNodePool, error) {
+	return listKubeNodePools(func(nextToken string) ([]SNodeGroup, string, error) {
+		return self.region.GetNodegroups(self.Name, nextToken)
+	})
+}
+
+func listKubeNodePools(list func(string) ([]SNodeGroup, string, error)) ([]cloudprovider.ICloudKubeNodePool, error) {
 	ret := []cloudprovider.ICloudKubeNodePool{}
 	nextToken := ""
 	for {
-		part, nextToken, err := self.region.GetNodegroups(self.Name, nextToken)
+		part, token, err := list(nextToken)
 		if err != nil {
 			return nil, errors.Wrapf(err, "GetNodegroups")
 		}
 		for i := range part {
 			ret = append(ret, &part[i])
 		}
+		nextToken = token
 		if len(nextToken) == 0 {
 			break
 		}
@@ -208,18 +236,32 @@ func (self *SRegion) GetKubeClusters(nextToken string) ([]SKubeCluster, string, 
 	if len(nextToken) > 0 {
 		params["nextToken"] = nextToken
 	}
-	result := []SKubeCluster{}
 	err := self.eksRequest("ListClusters", "/clusters", params, &ret)
 	if err != nil {
 		return nil, "", errors.Wrapf(err, "ListClusters")
 	}
-	for i := range ret.Clusters {
-		result = append(result, SKubeCluster{
-			region: self,
-			Name:   ret.Clusters[i],
-		})
+	result, err := describeKubeClusters(ret.Clusters, self.GetKubeCluster)
+	if err != nil {
+		return nil, "", err
 	}
 	return result, ret.NextToken, nil
+}
+
+// ListClusters only returns names. Hydrate in the error-returning path so an
+// unsuccessful DescribeCluster cannot be hidden by a getter during DB sync.
+func describeKubeClusters(names []string, describe func(string) (*SKubeCluster, error)) ([]SKubeCluster, error) {
+	result := make([]SKubeCluster, 0, len(names))
+	for _, name := range names {
+		cluster, err := describe(name)
+		if err != nil {
+			return nil, errors.Wrapf(err, "DescribeCluster(%s)", name)
+		}
+		if cluster == nil || len(cluster.Status) == 0 {
+			return nil, fmt.Errorf("DescribeCluster(%s) returned no cluster status", name)
+		}
+		result = append(result, *cluster)
+	}
+	return result, nil
 }
 
 func (self *SRegion) GetKubeCluster(name string) (*SKubeCluster, error) {
@@ -247,10 +289,14 @@ func (self *SRegion) DeleteKubeCluster(name string) error {
 }
 
 func (self *SRegion) GetICloudKubeClusters() ([]cloudprovider.ICloudKubeCluster, error) {
+	return self.listCloudKubeClusters(self.GetKubeClusters)
+}
+
+func (self *SRegion) listCloudKubeClusters(list func(string) ([]SKubeCluster, string, error)) ([]cloudprovider.ICloudKubeCluster, error) {
 	ret := []cloudprovider.ICloudKubeCluster{}
 	nextToken := ""
 	for {
-		part, nextToken, err := self.GetKubeClusters(nextToken)
+		part, token, err := list(nextToken)
 		if err != nil {
 			return nil, errors.Wrapf(err, "GetKubeClusters")
 		}
@@ -258,6 +304,7 @@ func (self *SRegion) GetICloudKubeClusters() ([]cloudprovider.ICloudKubeCluster,
 			part[i].region = self
 			ret = append(ret, &part[i])
 		}
+		nextToken = token
 		if len(nextToken) == 0 {
 			break
 		}

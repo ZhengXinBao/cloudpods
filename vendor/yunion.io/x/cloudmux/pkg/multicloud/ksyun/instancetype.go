@@ -17,6 +17,9 @@ package ksyun
 import (
 	"fmt"
 
+	api "yunion.io/x/cloudmux/pkg/apis"
+	"yunion.io/x/cloudmux/pkg/cloudprovider"
+	"yunion.io/x/cloudmux/pkg/multicloud"
 	"yunion.io/x/pkg/errors"
 )
 
@@ -72,5 +75,47 @@ func (region *SRegion) GetInstanceTypes() ([]SInstanceType, error) {
 		return nil, errors.Wrap(err, "unmarshal instance types")
 	}
 
+	return ret, nil
+}
+
+func newCloudSkuFromInstanceType(instanceType SInstanceType) *multicloud.SCloudSku {
+	if instanceType.InstanceType == "" || instanceType.CPU <= 0 || instanceType.Memory <= 0 {
+		return nil
+	}
+	sku := multicloud.NewSCloudSku(instanceType.InstanceType)
+	sku.InstanceTypeFamily = instanceType.InstanceFamily
+	sku.InstanceTypeCategory = instanceType.InstanceFamily
+	sku.CpuCoreCount = instanceType.CPU
+	sku.MemorySizeMB = instanceType.Memory * 1024
+	sku.CpuArch = api.OS_ARCH_X86_64
+	if count := instanceType.NetworkInterfaceQuota.NetworkInterfaceCount; count > 0 {
+		sku.NicMaxCount = count
+	}
+	for _, disk := range instanceType.DataDiskQuotaSet {
+		if disk.DataDiskCount > sku.DataDiskMaxCount {
+			sku.DataDiskMaxCount = disk.DataDiskCount
+		}
+	}
+	return sku
+}
+
+func (region *SRegion) GetISkus() ([]cloudprovider.ICloudSku, error) {
+	instanceTypes, err := region.GetInstanceTypes()
+	if err != nil {
+		return nil, errors.Wrap(err, "GetInstanceTypes")
+	}
+	ret := make([]cloudprovider.ICloudSku, 0, len(instanceTypes))
+	seen := make(map[string]bool)
+	for _, instanceType := range instanceTypes {
+		if seen[instanceType.InstanceType] {
+			continue
+		}
+		sku := newCloudSkuFromInstanceType(instanceType)
+		if sku == nil {
+			continue
+		}
+		seen[instanceType.InstanceType] = true
+		ret = append(ret, sku)
+	}
 	return ret, nil
 }

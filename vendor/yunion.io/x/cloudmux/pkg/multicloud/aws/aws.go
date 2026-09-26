@@ -24,12 +24,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go/aws"
 	sdk "github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
@@ -365,7 +365,8 @@ func (self *SAwsClient) GetRegions() ([]SRegion, error) {
 	ret := struct {
 		RegionInfo []SRegion `xml:"regionInfo>item"`
 	}{}
-	err := self.ec2Request("", "DescribeRegions", params, &ret, false)
+	// Opt-in eligibility belongs to the target member account, not the payer.
+	err := self.ec2Request("", "DescribeRegions", params, &ret, true)
 	if err != nil {
 		if e, ok := err.(*sAwsError); ok && e.Errors.Code == "AuthFailure" {
 			return nil, errors.Wrap(cloudprovider.ErrInvalidAccessKey, err.Error())

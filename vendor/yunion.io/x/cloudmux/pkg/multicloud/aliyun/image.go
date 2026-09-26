@@ -420,7 +420,7 @@ func (self *SRegion) getImages(params map[string]string) ([]SImage, int, error) 
 	err = body.Unmarshal(&images, "Images", "Image")
 	if err != nil {
 		log.Errorf("unmarshal images fail %s", err)
-		return nil, 0, nil
+		return nil, 0, errors.Wrap(err, "unmarshal images")
 	}
 	total, _ := body.Int("TotalCount")
 	return images, int(total), nil

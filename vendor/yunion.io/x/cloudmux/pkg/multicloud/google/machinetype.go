@@ -16,9 +16,13 @@ package google
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	api "yunion.io/x/cloudmux/pkg/apis"
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
+	"yunion.io/x/cloudmux/pkg/multicloud"
+	"yunion.io/x/pkg/errors"
 )
 
 type SMachineType struct {
@@ -54,4 +58,49 @@ func (region *SRegion) GetMachineType(id string) (*SMachineType, error) {
 		return nil, err
 	}
 	return machine, nil
+}
+
+func newCloudSkuFromMachineType(machine SMachineType) *multicloud.SCloudSku {
+	if machine.Name == "" || machine.GuestCpus <= 0 || machine.MemoryMb <= 0 {
+		return nil
+	}
+	family := machine.Name
+	if idx := strings.LastIndexByte(family, '-'); idx > 0 {
+		family = family[:idx]
+	}
+	sku := multicloud.NewSCloudSku(machine.Name)
+	sku.InstanceTypeFamily = family
+	sku.InstanceTypeCategory = family
+	sku.CpuCoreCount = machine.GuestCpus
+	sku.MemorySizeMB = machine.MemoryMb
+	sku.CpuArch = api.OS_ARCH_X86_64
+	return sku
+}
+
+func (region *SRegion) GetISkus() ([]cloudprovider.ICloudSku, error) {
+	zones, err := region.GetZones(region.Name, 0, "")
+	if err != nil {
+		return nil, errors.Wrap(err, "GetZones")
+	}
+
+	ret := make([]cloudprovider.ICloudSku, 0)
+	seen := make(map[string]bool)
+	for _, zone := range zones {
+		machines, err := region.GetMachineTypes(zone.Name, 0, "")
+		if err != nil {
+			return nil, errors.Wrapf(err, "GetMachineTypes(%s)", zone.Name)
+		}
+		for _, machine := range machines {
+			if seen[machine.Name] {
+				continue
+			}
+			sku := newCloudSkuFromMachineType(machine)
+			if sku == nil {
+				continue
+			}
+			seen[machine.Name] = true
+			ret = append(ret, sku)
+		}
+	}
+	return ret, nil
 }

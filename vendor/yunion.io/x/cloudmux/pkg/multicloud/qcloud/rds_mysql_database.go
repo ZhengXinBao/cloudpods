@@ -68,7 +68,7 @@ func (self *SRegion) DescribeMySQLDatabases(instanceId string, offset, limit int
 	}
 	resp, err := self.cdbRequest("DescribeDatabases", params)
 	if err != nil {
-		return nil, 0, errors.Wrapf(err, "DescribeDatabases")
+		return nil, 0, errors.Wrapf(mysqlInstanceOptionalError("DescribeDatabases", err), "DescribeDatabases")
 	}
 	databases := []SMySQLInstanceDatabase{}
 	err = resp.Unmarshal(&databases, "DatabaseList")

@@ -462,22 +462,22 @@ func (region *SRegion) getSdkCredential(service string, token string) sdk.Creden
 
 func (region *SRegion) ecsRequest(apiName string, params map[string]string) (jsonutils.JSONObject, error) {
 	cred := region.getSdkCredential(VOLCENGINE_SERVICE_ECS, "")
-	return region.client.jsonRequest(cred, VOLCENGINE_API, VOLCENGINE_API_VERSION, apiName, params)
+	return region.client.jsonRequest(cred, region.client.getAPIEndpoint(region.RegionId, VOLCENGINE_SERVICE_ECS), VOLCENGINE_API_VERSION, apiName, params)
 }
 
 func (region *SRegion) vpcRequest(apiName string, params map[string]string) (jsonutils.JSONObject, error) {
 	cred := region.getSdkCredential(VOLCENGINE_SERVICE_VPC, "")
-	return region.client.jsonRequest(cred, VOLCENGINE_API, VOLCENGINE_API_VERSION, apiName, params)
+	return region.client.jsonRequest(cred, region.client.getAPIEndpoint(region.RegionId, VOLCENGINE_SERVICE_VPC), VOLCENGINE_API_VERSION, apiName, params)
 }
 
 func (region *SRegion) natRequest(apiName string, params map[string]string) (jsonutils.JSONObject, error) {
 	cred := region.getSdkCredential(VOLCENGINE_SERVICE_NAT, "")
-	return region.client.jsonRequest(cred, VOLCENGINE_API, VOLCENGINE_API_VERSION, apiName, params)
+	return region.client.jsonRequest(cred, region.client.getAPIEndpoint(region.RegionId, VOLCENGINE_SERVICE_NAT), VOLCENGINE_API_VERSION, apiName, params)
 }
 
 func (region *SRegion) storageRequest(apiName string, params map[string]string) (jsonutils.JSONObject, error) {
 	cred := region.getSdkCredential(VOLCENGINE_SERVICE_STORAGE, "")
-	return region.client.jsonRequest(cred, VOLCENGINE_API, VOLCENGINE_API_VERSION, apiName, params)
+	return region.client.jsonRequest(cred, region.client.getAPIEndpoint(region.RegionId, VOLCENGINE_SERVICE_STORAGE), VOLCENGINE_API_VERSION, apiName, params)
 }
 
 func (region *SRegion) GetTosClient() (*tos.ClientV2, error) {

@@ -153,7 +153,9 @@ func (disk *SDisk) GetIStorageId() string {
 }
 
 func (disk *SDisk) GetDiskFormat() string {
-	return ""
+	// Managed cloud volumes use the same logical format as other public-cloud
+	// disks; Ksyun does not expose a backing image format in DescribeVolumes.
+	return "vhd"
 }
 
 func (disk *SDisk) GetId() string {

@@ -31,6 +31,10 @@ type SVolcEngineProviderFactory struct {
 	cloudprovider.SPublicCloudBaseProviderFactory
 }
 
+func (self *SVolcEngineProviderFactory) NeedSyncSkuFromCloud() bool {
+	return true
+}
+
 func (self *SVolcEngineProviderFactory) GetId() string {
 	return volcengine.CLOUD_PROVIDER_VOLCENGINE
 }

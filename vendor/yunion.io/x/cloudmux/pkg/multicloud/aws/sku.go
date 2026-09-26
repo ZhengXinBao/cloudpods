@@ -16,8 +16,12 @@ package aws
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
+	api "yunion.io/x/cloudmux/pkg/apis"
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
+	"yunion.io/x/cloudmux/pkg/multicloud"
 	"yunion.io/x/pkg/errors"
 )
 
@@ -180,6 +184,24 @@ func (self *SRegion) GetInstanceTypes() ([]SInstanceType, error) {
 
 type Sku struct {
 	InstanceType string `xml:"instanceType"`
+	MemoryInfo   struct {
+		SizeInMiB int `xml:"sizeInMiB"`
+	} `xml:"memoryInfo"`
+	VCpuInfo struct {
+		DefaultVCpus int `xml:"defaultVCpus"`
+	} `xml:"vCpuInfo"`
+	ProcessorInfo struct {
+		SupportedArchitectures []string `xml:"supportedArchitectures>item"`
+	} `xml:"processorInfo"`
+	NetworkInfo struct {
+		MaximumNetworkInterfaces int `xml:"maximumNetworkInterfaces"`
+	} `xml:"networkInfo"`
+	GpuInfo struct {
+		Gpus []struct {
+			Count int    `xml:"count"`
+			Name  string `xml:"name"`
+		} `xml:"gpus>item"`
+	} `xml:"gpuInfo"`
 }
 
 func (self *SRegion) DescribeInstanceTypes(arch string, nextToken string) ([]Sku, string, error) {
@@ -187,6 +209,7 @@ func (self *SRegion) DescribeInstanceTypes(arch string, nextToken string) ([]Sku
 	if len(nextToken) > 0 {
 		params["NextToken"] = nextToken
 	}
+	params["MaxResults"] = "100"
 	idx := 1
 	if len(arch) > 0 {
 		params[fmt.Sprintf("Filter.%d.Name", idx)] = "processor-info.supported-architecture"
@@ -202,4 +225,72 @@ func (self *SRegion) DescribeInstanceTypes(arch string, nextToken string) ([]Sku
 		return nil, "", err
 	}
 	return ret.InstanceTypeSet, ret.NextToken, nil
+}
+
+func newCloudSkuFromInstanceType(instanceType Sku) *multicloud.SCloudSku {
+	if instanceType.InstanceType == "" || instanceType.VCpuInfo.DefaultVCpus <= 0 || instanceType.MemoryInfo.SizeInMiB <= 0 {
+		return nil
+	}
+	sku := multicloud.NewSCloudSku(instanceType.InstanceType)
+	family := instanceType.InstanceType
+	if idx := strings.IndexByte(family, '.'); idx > 0 {
+		family = family[:idx]
+	}
+	sku.InstanceTypeFamily = family
+	sku.InstanceTypeCategory = family
+	sku.CpuCoreCount = instanceType.VCpuInfo.DefaultVCpus
+	sku.MemorySizeMB = instanceType.MemoryInfo.SizeInMiB
+	sku.CpuArch = api.OS_ARCH_X86_64
+	if len(instanceType.ProcessorInfo.SupportedArchitectures) > 0 {
+		switch instanceType.ProcessorInfo.SupportedArchitectures[0] {
+		case "arm64", "aarch64":
+			sku.CpuArch = api.OS_ARCH_ARM
+		}
+	}
+	if instanceType.NetworkInfo.MaximumNetworkInterfaces > 0 {
+		sku.NicMaxCount = instanceType.NetworkInfo.MaximumNetworkInterfaces
+	}
+	for _, gpu := range instanceType.GpuInfo.Gpus {
+		if gpu.Count > 0 {
+			sku.GpuAttachable = true
+			sku.GpuSpec = gpu.Name
+			sku.GpuCount = strconv.Itoa(gpu.Count)
+			sku.GpuMaxCount = gpu.Count
+			break
+		}
+	}
+	return sku
+}
+
+func (self *SRegion) GetISkus() ([]cloudprovider.ICloudSku, error) {
+	ret := []cloudprovider.ICloudSku{}
+	seen := map[string]bool{}
+	seenTokens := map[string]bool{}
+	nextToken := ""
+	for {
+		part, token, err := self.DescribeInstanceTypes("", nextToken)
+		if err != nil {
+			return nil, errors.Wrap(err, "DescribeInstanceTypes")
+		}
+		for _, item := range part {
+			if seen[item.InstanceType] {
+				continue
+			}
+			sku := newCloudSkuFromInstanceType(item)
+			if sku == nil {
+				continue
+			}
+			seen[item.InstanceType] = true
+			ret = append(ret, sku)
+		}
+		if token == "" {
+			break
+		}
+		if seenTokens[token] {
+			return nil, errors.Errorf("DescribeInstanceTypes returned repeated next token %q", token)
+		}
+		seenTokens[token] = true
+		nextToken = token
+	}
+	return ret, nil
 }

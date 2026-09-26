@@ -62,7 +62,18 @@ func (cache *SStoragecache) IsEmulated() bool {
 }
 
 func (cache *SStoragecache) GetICloudImages() ([]cloudprovider.ICloudImage, error) {
-	return nil, cloudprovider.ErrNotImplemented
+	images, err := cache.region.GetAllAvailableImages()
+	if err != nil {
+		return nil, errors.Wrapf(err, "GetAllAvailableImages")
+	}
+	ret := make([]cloudprovider.ICloudImage, 0, len(images))
+	for i := range images {
+		images[i].storagecache = cache
+		if images[i].GetImageType() == cloudprovider.ImageTypeSystem {
+			ret = append(ret, &images[i])
+		}
+	}
+	return ret, nil
 }
 
 func (cache *SStoragecache) GetICustomizedCloudImages() ([]cloudprovider.ICloudImage, error) {
