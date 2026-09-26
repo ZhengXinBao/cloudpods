@@ -76,6 +76,9 @@ func (self *CloudProviderSyncInfoTask) OnInit(ctx context.Context, obj db.IStand
 	syncRange := self.GetSyncRange(ctx)
 
 	taskman.LocalTaskRun(self, func() (jsonutils.JSONObject, error) {
+		if models.IndependentSyncAccount(provider.CloudaccountId) {
+			return nil, nil
+		}
 		return nil, models.SyncCloudproviderResources(ctx, self.GetUserCred(), provider, &syncRange)
 	})
 }
@@ -83,6 +86,11 @@ func (self *CloudProviderSyncInfoTask) OnInit(ctx context.Context, obj db.IStand
 func (self *CloudProviderSyncInfoTask) OnSyncCloudProviderPreInfoComplete(ctx context.Context, obj db.IStandaloneModel, body jsonutils.JSONObject) {
 	provider := obj.(*models.SCloudprovider)
 	syncRange := self.GetSyncRange(ctx)
+
+	if models.IndependentSyncAccount(provider.CloudaccountId) {
+		self.prepareIndependentSync(ctx, provider, syncRange)
+		return
+	}
 
 	db.OpsLog.LogEvent(provider, db.ACT_SYNCING_HOST, "", self.UserCred)
 	self.SetStage("OnSyncCloudProviderInfoComplete", nil)
@@ -95,6 +103,16 @@ func (self *CloudProviderSyncInfoTask) OnSyncCloudProviderPreInfoComplete(ctx co
 
 func (self *CloudProviderSyncInfoTask) OnSyncCloudProviderPreInfoCompleteFailed(ctx context.Context, obj db.IStandaloneModel, body jsonutils.JSONObject) {
 	log.Errorf("faild to sync provider quotas %s", body.String())
+	provider := obj.(*models.SCloudprovider)
+	if models.IndependentSyncAccount(provider.CloudaccountId) {
+		params := jsonutils.NewDict()
+		params.Set("independent_sync_plan_error", body)
+		if err := self.SaveParams(params); err != nil {
+			self.SetStageFailed(ctx, jsonutils.NewString(err.Error()))
+			return
+		}
+	}
+
 	self.OnSyncCloudProviderPreInfoComplete(ctx, obj, body)
 }
 

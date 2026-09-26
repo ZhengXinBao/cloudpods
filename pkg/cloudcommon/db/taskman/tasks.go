@@ -116,8 +116,9 @@ type STask struct {
 
 	db.SProjectizedResourceBase
 
-	taskObject  db.IStandaloneModel   `ignore:"true"`
-	taskObjects []db.IStandaloneModel `ignore:"true"`
+	expectedRunStage string                `ignore:"true"`
+	taskObject       db.IStandaloneModel   `ignore:"true"`
+	taskObjects      []db.IStandaloneModel `ignore:"true"`
 
 	SubTaskCount   int `ignore:"true" json:"sub_task_count"`
 	FailSubTaskCnt int `ignore:"true" json:"fail_sub_task_cnt"`
@@ -620,6 +621,14 @@ func execITask(taskValue reflect.Value, task *STask, odata jsonutils.JSONObject,
 		params[1] = reflect.ValueOf(obj)
 	}
 
+	// A worker may have waited for the object lock after loading its stage.
+	// Stage-bound notifications must recheck before invoking the stale method.
+	if task.expectedRunStage != "" {
+		current := TaskManager.fetchTask(task.Id)
+		if current == nil || current.Stage != task.expectedRunStage {
+			return
+		}
+	}
 	params[2] = reflect.ValueOf(data)
 
 	filled := reflectutils.FillEmbededStructValue(taskValue.Elem(), reflect.Indirect(reflect.ValueOf(task)))
@@ -670,6 +679,11 @@ func execITask(taskValue reflect.Value, task *STask, odata jsonutils.JSONObject,
 
 func (task *STask) ScheduleRun(data jsonutils.JSONObject) error {
 	return runTask(task.Id, data)
+}
+
+// ScheduleRunAtStage drops delayed notifications after a stage transition.
+func (task *STask) ScheduleRunAtStage(data jsonutils.JSONObject) error {
+	return runTaskAtStage(task.Id, data, task.Stage)
 }
 
 func (task *STask) IsSubtask() bool {
@@ -1338,6 +1352,9 @@ func (manager *STaskManager) failTimeoutTasks() error {
 	reason.Add(jsonutils.NewString("error"), "__status__")
 	for i := range tasks {
 		task := &tasks[i]
+		if preserveTaskInstanceOnRestart(task) {
+			continue
+		}
 		task.fixParams()
 		manager.execTaskObject(task, reason)
 	}

@@ -21,7 +21,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
@@ -710,10 +709,11 @@ func (acnt *SCloudaccount) PerformSync(ctx context.Context, userCred mcclient.To
 		return nil, httperrors.NewInvalidStatusError("Account disabled")
 	}
 
-	syncRange := SSyncRange{SyncRangeInput: input}
-	if syncRange.FullSync || len(syncRange.Region) > 0 || len(syncRange.Zone) > 0 || len(syncRange.Host) > 0 || len(syncRange.Resources) > 0 {
-		syncRange.DeepSync = true
+	if input.RetryFailedRun != "" {
+		return acnt.RetryFailedSyncRun(ctx, userCred, input.RetryFailedRun)
 	}
+
+	syncRange := SSyncRange{SyncRangeInput: input}
 	syncRange.SkipSyncResources = []string{}
 	if acnt.SkipSyncResources != nil {
 		for _, res := range *acnt.SkipSyncResources {
@@ -917,6 +917,9 @@ func (acnt *SCloudaccount) PerformUpdateCredential(
 }
 
 func (acnt *SCloudaccount) StartSyncCloudAccountInfoTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange *SSyncRange, parentTaskId string, data jsonutils.JSONObject) error {
+	if err := ensureLegacySyncAllowed(ctx, acnt.Id); err != nil {
+		return err
+	}
 	params := jsonutils.NewDict()
 	if data != nil {
 		params.Update(data)
@@ -924,7 +927,6 @@ func (acnt *SCloudaccount) StartSyncCloudAccountInfoTask(ctx context.Context, us
 	if gotypes.IsNil(syncRange) {
 		syncRange = &SSyncRange{}
 		syncRange.FullSync = true
-		syncRange.DeepSync = true
 	}
 	syncRange.SkipSyncResources = []string{}
 	if acnt.SkipSyncResources != nil {
@@ -951,14 +953,8 @@ func (acnt *SCloudaccount) markStartSync(userCred mcclient.TokenCredential, sync
 	if err != nil {
 		return errors.Wrap(err, "Update")
 	}
-	providers := acnt.GetCloudproviders()
-	for i := range providers {
-		if providers[i].GetEnabled() {
-			err := providers[i].markStartingSync(userCred, syncRange)
-			if err != nil {
-				return errors.Wrap(err, "providers.markStartSync")
-			}
-		}
+	if syncRange != nil {
+		log.Debugf("markStartSync account %s full=%v", acnt.Id, syncRange.FullSync)
 	}
 	return nil
 }
@@ -988,10 +984,6 @@ func (acnt *SCloudaccount) MarkEndSyncWithLock(ctx context.Context, userCred mcc
 		if err != nil {
 			return errors.Wrap(err, "providers.cancelStartingSync")
 		}
-	}
-
-	if acnt.getSyncStatus2() != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
-		return errors.Error("some cloud providers not idle")
 	}
 
 	return acnt.MarkEndSync(userCred, deepSync)
@@ -1643,10 +1635,19 @@ func (manager *SCloudaccountManager) FetchCustomizeColumns(
 		rows[i].CloudEnv = account.GetCloudEnv()
 		rows[i].ProjectizedResourceInfo = projRows[i]
 		rows[i].SAccountUsage, _ = usage[accountIds[i]]
-		rows[i].SyncStatus2 = api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
-		if rows[i].SyncCount > 0 {
-			rows[i].SyncStatus2 = api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING
+		rows[i].SyncStatus, rows[i].SyncStatus2 = accountListSyncStatus(account.SyncStatus, rows[i].SyncCount)
+		if IndependentSyncAccount(account.Id) {
+			counts, err := CloudSyncQueue().Stats(ctx, account.Id)
+			if err != nil {
+				rows[i].SyncQueueError = "queue progress unavailable"
+				log.Errorf("sync queue progress %s: %v", account.Id, err)
+			} else {
+				rows[i].SyncQueueCounts = counts
+				active := counts["waiting"] + counts["running"] + counts["retry"]
+				rows[i].SyncStatus, rows[i].SyncStatus2 = accountListSyncStatus(account.SyncStatus, active)
+			}
 		}
+
 	}
 
 	return rows
@@ -2272,7 +2273,7 @@ func (manager *SCloudaccountManager) initAllRecords() {
 }
 
 func (acnt *SCloudaccount) CanSync() bool {
-	if acnt.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_QUEUED || acnt.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING || acnt.getSyncStatus2() == api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING {
+	if acnt.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_QUEUED || acnt.SyncStatus == api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING {
 		if acnt.LastSync.IsZero() || time.Now().Sub(acnt.LastSync) > time.Minute*30 {
 			return true
 		}
@@ -2300,26 +2301,26 @@ func (manager *SCloudaccountManager) AutoSyncCloudaccountStatusTask(ctx context.
 	for i := range accounts {
 		if accounts[i].GetEnabled() && accounts[i].shouldProbeStatus() && accounts[i].CanSync() {
 			id, name, account := accounts[i].Id, accounts[i].Name, &accounts[i]
-			cloudaccountPendingSyncsMutex.Lock()
-			if _, ok := cloudaccountPendingSyncs[id]; ok {
-				cloudaccountPendingSyncsMutex.Unlock()
+			release, err := cloudaccountSyncAdmissions.acquire(ctx, id, false)
+			if err != nil || release == nil {
 				continue
 			}
-			cloudaccountPendingSyncs[id] = struct{}{}
-			cloudaccountPendingSyncsMutex.Unlock()
 			RunSyncCloudAccountProbeTask(ctx, func() {
-				defer func() {
-					cloudaccountPendingSyncsMutex.Lock()
-					defer cloudaccountPendingSyncsMutex.Unlock()
-					delete(cloudaccountPendingSyncs, id)
-				}()
+				defer release()
 				log.Debugf("syncAccountStatus %s %s", id, name)
 				idctx := context.WithValue(ctx, "id", id)
-				lockman.LockObject(idctx, account)
-				defer lockman.ReleaseObject(idctx, account)
-				err := account.syncAccountStatus(idctx, userCred, false)
+				var err error
+				func() {
+					lockman.LockObject(idctx, account)
+					defer lockman.ReleaseObject(idctx, account)
+					err = account.syncAccountStatus(idctx, userCred, false)
+				}()
 				if err != nil {
 					log.Errorf("unable to syncAccountStatus for cloudaccount %s: %s", account.Id, err.Error())
+					return
+				}
+				if err := account.DiscoverDisabledCloudproviderRegions(idctx, userCred, true); err != nil {
+					log.Errorf("DiscoverDisabledCloudproviderRegions %s: %s", id, err.Error())
 				}
 			})
 		}
@@ -2484,6 +2485,7 @@ func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mc
 	}
 	account.markAccountConnected(ctx, userCred)
 	providers := account.importAllSubaccounts(ctx, userCred, subaccounts)
+	keepRegionExtIds := account.getSubAccountRegionExternalIds()
 	if prepareRegions {
 		for i := range providers {
 			if providers[i].GetEnabled() {
@@ -2494,50 +2496,66 @@ func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mc
 			}
 		}
 	}
-	return account.setSubAccountStatus()
+	err = account.setSubAccountStatus()
+	if err != nil {
+		return err
+	}
+	return account.RefreshEnabledCloudproviderRegions(ctx, userCred, keepRegionExtIds, nil)
 }
 
-var (
-	cloudaccountPendingSyncs      = map[string]struct{}{}
-	cloudaccountPendingSyncsMutex = &sync.Mutex{}
-)
+var cloudaccountSyncAdmissions cloudaccountSyncAdmission
 
 func (account *SCloudaccount) SubmitSyncAccountTask(ctx context.Context, userCred mcclient.TokenCredential, waitChan chan error) {
-	cloudaccountPendingSyncsMutex.Lock()
-	defer cloudaccountPendingSyncsMutex.Unlock()
-	if _, ok := cloudaccountPendingSyncs[account.Id]; ok {
-		if waitChan != nil {
-			go func() {
-				waitChan <- errors.Wrap(httperrors.ErrConflict, "an active cloudaccount sync task is running, early return with conflict error")
-			}()
-		}
-		return
-	}
-	cloudaccountPendingSyncs[account.Id] = struct{}{}
-
-	RunSyncCloudAccountSyncTask(ctx, func() {
-		defer func() {
-			cloudaccountPendingSyncsMutex.Lock()
-			defer cloudaccountPendingSyncsMutex.Unlock()
-			delete(cloudaccountPendingSyncs, account.Id)
-		}()
-		log.Debugf("syncAccountStatus %s %s", account.Id, account.Name)
-		err := account.syncAccountStatus(ctx, userCred, true)
+	submit := func() {
+		release, err := cloudaccountSyncAdmissions.acquire(ctx, account.Id, waitChan != nil)
 		if err != nil {
-			log.Errorf("syncAccountStatus %s %s fail: %s", account.Id, account.Name, err)
-			err = errors.Wrap(err, "account.syncAccountStatus")
+			deliverCloudaccountSyncResult(ctx, waitChan, err)
+			return
 		}
-		if waitChan != nil {
-			waitChan <- err
+		if release == nil {
+			return
 		}
-	})
+		RunSyncCloudAccountSyncTask(ctx, func() {
+			err := func() error {
+				defer release()
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				log.Debugf("syncAccountStatus %s %s", account.Id, account.Name)
+				// Start the resource sync clock only after admission. A background
+				// probe must finish before this manual request prepares its regions.
+				if waitChan != nil {
+					if err := account.MarkSyncing(userCred); err != nil {
+						return errors.Wrap(err, "account.MarkSyncing")
+					}
+				}
+				err := account.syncAccountStatus(ctx, userCred, true)
+				if err != nil {
+					log.Errorf("syncAccountStatus %s %s fail: %s", account.Id, account.Name, err)
+					return errors.Wrap(err, "account.syncAccountStatus")
+				} else if waitChan == nil {
+					if derr := account.DiscoverDisabledCloudproviderRegions(ctx, userCred, false); derr != nil {
+						log.Errorf("DiscoverDisabledCloudproviderRegions %s %s fail: %s", account.Id, account.Name, derr)
+					}
+				}
+				return nil
+			}()
+			deliverCloudaccountSyncResult(ctx, waitChan, err)
+		})
+	}
+	if waitChan != nil {
+		// Waiting outside the worker pool leaves workers available to finish
+		// the preparation that currently owns this account's admission slot.
+		go submit()
+	} else {
+		submit()
+	}
 }
 
 func (account *SCloudaccount) SyncCallSyncAccountTask(ctx context.Context, userCred mcclient.TokenCredential) error {
-	waitChan := make(chan error)
+	waitChan := make(chan error, 1)
 	account.SubmitSyncAccountTask(ctx, userCred, waitChan)
-	err := <-waitChan
-	return err
+	return waitCloudaccountSyncResult(ctx, waitChan)
 }
 
 func (acnt *SCloudaccount) Delete(ctx context.Context, userCred mcclient.TokenCredential) error {

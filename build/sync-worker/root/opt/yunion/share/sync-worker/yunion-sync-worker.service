@@ -1,0 +1,17 @@
+[Unit]
+Description=Cloudpods independent cloud synchronization worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/yunion/bin/sync-worker --config /etc/yunion/sync-worker.conf
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGTERM
+KillMode=control-group
+TimeoutStopSec=100
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

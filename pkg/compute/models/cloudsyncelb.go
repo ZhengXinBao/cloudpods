@@ -42,8 +42,10 @@ func syncRegionLoadbalancerCertificates(
 		return remoteRegion.GetILoadBalancerCertificates()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("GetILoadBalancerCertificates for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
-		log.Errorln(msg)
+		if skipOptionalCloudSync(err, "GetILoadBalancerCertificates") {
+			return
+		}
+		cloudSyncError(ctx, "GetILoadBalancerCertificates for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
 		return
 	}
 	result := func() compare.SyncResult {
@@ -74,8 +76,10 @@ func syncRegionLoadbalancerHealthChecks(
 		return remoteRegion.GetILoadBalancerHealthChecks()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("GetILoadBalancerHealthChecks for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
-		log.Errorln(msg)
+		if skipOptionalCloudSync(err, "GetILoadBalancerHealthChecks") {
+			return
+		}
+		cloudSyncError(ctx, "GetILoadBalancerHealthChecks for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
 		return
 	}
 	result := func() compare.SyncResult {
@@ -106,8 +110,10 @@ func syncRegionLoadbalancerAcls(
 		return remoteRegion.GetILoadBalancerAcls()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("GetILoadBalancerAcls for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
-		log.Errorln(msg)
+		if skipOptionalCloudSync(err, "GetILoadBalancerAcls") {
+			return
+		}
+		cloudSyncError(ctx, "GetILoadBalancerAcls for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
 		return
 	}
 	result := func() compare.SyncResult {
@@ -138,8 +144,10 @@ func syncRegionLoadbalancers(
 		return remoteRegion.GetILoadBalancers()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("GetILoadBalancers for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
-		log.Errorln(msg)
+		if skipOptionalCloudSync(err, "GetILoadBalancers") {
+			return
+		}
+		cloudSyncError(ctx, "GetILoadBalancers for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
 		return
 	}
 	func() {
@@ -152,6 +160,17 @@ func syncRegionLoadbalancers(
 		msg := result.Result()
 		log.Infof("SyncLoadbalancers for region %s provider %s result: %s", localRegion.Name, provider.Name, msg)
 		if result.IsError() {
+			return
+		}
+		// The reconciler's returned pairs omit unchanged Xor records. Query the
+		// persisted provider/region inventory instead, using the already fetched
+		// cloud IDs. This presence audit does not remove local-only resources.
+		expected := make([]string, 0, len(lbs))
+		for _, lb := range lbs {
+			expected = append(expected, lb.GetGlobalId())
+		}
+		if err := verifyCloudInventoryQuery(expected, localRegion.GetManagedLoadbalancerQuery(provider.Id)); err != nil {
+			cloudSyncError(ctx, "Loadbalancer inventory provider %s region %s: %v", provider.Id, localRegion.Id, err)
 			return
 		}
 		db.OpsLog.LogEvent(provider, db.ACT_SYNC_LB_COMPLETE, msg, userCred)
@@ -170,20 +189,20 @@ func syncRegionLoadbalancers(
 func syncLbPeripherals(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, local *SLoadbalancer, remote cloudprovider.ICloudLoadbalancer) {
 	err := syncLoadbalancerEips(ctx, userCred, provider, local, remote)
 	if err != nil {
-		log.Errorf("syncLoadbalancerEips for loadbalancer %s provider %s error %s", local.Name, provider.Name, err)
+		cloudSyncError(ctx, "syncLoadbalancerEips for loadbalancer %s provider %s error %s", local.Name, provider.Name, err)
 	}
 	err = syncLoadbalancerBackendgroups(ctx, userCred, SSyncResultSet{}, provider, local, remote)
 	if err != nil {
-		log.Errorf("syncLoadbalancerBackendgroups for loadbalancer %s provider %s error: %v", local.Name, provider.Name, err)
+		cloudSyncError(ctx, "syncLoadbalancerBackendgroups for loadbalancer %s provider %s error: %v", local.Name, provider.Name, err)
 	}
 	err = syncLoadbalancerListeners(ctx, userCred, SSyncResultSet{}, provider, local, remote)
 	if err != nil {
-		log.Errorf("syncLoadbalancerListeners for loadbalancer %s provider %s error: %v", local.Name, provider.Name, err)
+		cloudSyncError(ctx, "syncLoadbalancerListeners for loadbalancer %s provider %s error: %v", local.Name, provider.Name, err)
 	}
 
 	err = syncLoadbalancerSecurityGroups(ctx, userCred, local, remote)
 	if err != nil {
-		log.Errorf("syncLoadbalancerSecurityGroups for loadbalancer %s provider %s error: %v", local.Name, provider.Name, err)
+		cloudSyncError(ctx, "syncLoadbalancerSecurityGroups for loadbalancer %s provider %s error: %v", local.Name, provider.Name, err)
 	}
 }
 

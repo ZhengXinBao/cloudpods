@@ -83,6 +83,11 @@ type SCloudproviderregion struct {
 
 	LastDeepSyncAt time.Time `list:"domain"`
 	LastAutoSyncAt time.Time `list:"domain"`
+
+	// Last time a disabled region was probed for cloud-side resources.
+	LastDiscoverAt time.Time `list:"domain"`
+	// Last time that probe found cloud-side resources.
+	LastDiscoverHitAt time.Time `list:"domain"`
 }
 
 func (manager *SCloudproviderregionManager) GetMasterFieldName() string {
@@ -363,6 +368,8 @@ type SyncResult struct {
 
 type SSyncResultSet map[string]*SyncResult
 
+type skipCloudSyncStatusKey struct{}
+
 func (set SSyncResultSet) AddRequestCost(manager db.IModelManager) func() {
 	start := time.Now()
 	key := manager.KeywordPlural()
@@ -401,9 +408,18 @@ func (set SSyncResultSet) Add(manager db.IModelManager, result compare.SyncResul
 	res.UpdateErrCnt += result.UpdateErrCnt
 	res.DelCnt += result.DelCnt
 	res.DelErrCnt += result.DelErrCnt
+	if result.IsError() {
+		res.Error(result.AllError())
+	}
 }
 
 func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange) error {
+	if !self.Enabled {
+		deepSync := false
+		return self.markEndSync(ctx, userCred, SSyncResultSet{}, &deepSync)
+	}
+	manageStatus := ctx.Value(skipCloudSyncStatusKey{}) != true
+
 	syncResults := SSyncResultSet{}
 
 	localRegion, err := self.GetRegion()
@@ -415,14 +431,20 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 		return errors.Wrapf(err, "GetProvider")
 	}
 
-	self.markSyncing(userCred)
-
-	defer func() {
-		err := self.markEndSync(ctx, userCred, syncResults, &syncRange.DeepSync)
-		if err != nil {
-			log.Errorf("markEndSync for %s(%s) : %v", localRegion.Name, provider.Name, err)
+	if manageStatus {
+		if err := self.markSyncing(userCred); err != nil {
+			return err
 		}
-	}()
+	}
+
+	if manageStatus {
+		defer func() {
+			err := self.markEndSync(ctx, userCred, syncResults, &syncRange.DeepSync)
+			if err != nil {
+				cloudSyncError(ctx, "markEndSync for %s(%s) : %v", localRegion.Name, provider.Name, err)
+			}
+		}()
+	}
 
 	driver, err := provider.GetProvider(ctx)
 	if err != nil {
@@ -430,12 +452,6 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 		return err
 	}
 
-	if !syncRange.DeepSync {
-		log.Debugf("no need to do deep sync, check...")
-		if self.LastDeepSyncAt.IsZero() || time.Now().Sub(self.LastDeepSyncAt) > time.Hour*24 {
-			syncRange.DeepSync = true
-		}
-	}
 	log.Debugf("need to do deep sync? ... %v, xor? ... %v", syncRange.DeepSync, syncRange.Xor)
 
 	if localRegion.isManaged() {
@@ -451,6 +467,12 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 	if err != nil {
 		log.Errorf("dosync fail %s", err)
 	}
+	if resultErr := syncResultSetError(syncResults); resultErr != nil {
+		cloudSyncError(ctx, "%v", resultErr)
+		if err == nil {
+			err = resultErr
+		}
+	}
 
 	log.Debugf("dosync result: %s", jsonutils.Marshal(syncResults))
 
@@ -458,18 +480,33 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 }
 
 func (self *SCloudproviderregion) getSyncTaskKey() string {
-	return fmt.Sprintf("%d", self.RowId)
+	return self.CloudproviderId + "/" + self.CloudregionId
 }
 
-func (self *SCloudproviderregion) submitSyncTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange) {
-	self.markStartSync(userCred)
+func (self *SCloudproviderregion) submitSyncTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange) error {
+	if !self.Enabled {
+		return nil
+	}
+	provider, err := self.GetProvider()
+	if err != nil {
+		return err
+	}
+	if IndependentSyncAccount(provider.CloudaccountId) {
+		return self.enqueueResourceSync(ctx, userCred, syncRange, "requested", "")
+	}
+	if err := ensureLegacySyncAllowed(ctx, provider.CloudaccountId); err != nil {
+		return err
+	}
+	if err := self.markStartSync(userCred); err != nil {
+		return err
+	}
 	RunSyncCloudproviderRegionTask(ctx, self.getSyncTaskKey(), func() {
 		ctx = context.WithValue(ctx, "provider-region", fmt.Sprintf("%d", self.RowId))
-		err := self.DoSync(ctx, userCred, syncRange)
-		if err != nil {
-			log.Errorf("DoSync faild %v", err)
+		if err := self.DoSync(ctx, userCred, syncRange); err != nil {
+			log.Errorf("DoSync failed %v", err)
 		}
 	})
+	return nil
 }
 
 func (cpr *SCloudproviderregion) resetAutoSync() {

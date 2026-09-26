@@ -339,14 +339,9 @@ func (manager *SZoneManager) SyncZones(
 		return nil, nil, syncResult
 	}
 
-	for i := 0; i < len(removed); i += 1 {
-		err = removed[i].syncRemoveCloudZone(ctx, userCred, provider)
-		if err != nil {
-			syncResult.DeleteError(err)
-		} else {
-			syncResult.Delete()
-		}
-	}
+	reconcileMissingCloudZones(region, removed, &syncResult, func(zone *SZone) error {
+		return zone.syncRemoveCloudZone(ctx, userCred, provider)
+	})
 	for i := 0; i < len(commondb); i += 1 {
 		if !xor {
 			err = commondb[i].syncWithCloudZone(ctx, userCred, commonext[i], region)
@@ -370,6 +365,32 @@ func (manager *SZoneManager) SyncZones(
 	}
 
 	return localZones, remoteZones, syncResult
+}
+
+func reconcileMissingCloudZones(region *SCloudregion, removed []SZone, result *compare.SyncResult, remove func(*SZone) error) {
+	if len(removed) == 0 {
+		return
+	}
+	factory, err := cloudprovider.GetProviderFactory(region.Provider)
+	if err != nil {
+		result.Error(errors.Wrapf(err, "determine zone ownership for region %s", region.Id))
+		return
+	}
+	// Public cloud zones belong to the shared region catalog. One account's
+	// availability-zone response is not authoritative for deleting that catalog.
+	if factory.IsPublicCloud() {
+		for i := range removed {
+			log.Warningf("Retain shared public cloud zone %s(%s) in region %s: absent from this account's inventory", removed[i].Name, removed[i].Id, region.Id)
+		}
+		return
+	}
+	for i := range removed {
+		if err := remove(&removed[i]); err != nil {
+			result.DeleteError(err)
+		} else {
+			result.Delete()
+		}
+	}
 }
 
 func (self *SZone) syncRemoveCloudZone(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider) error {

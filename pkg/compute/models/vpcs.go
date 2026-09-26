@@ -71,6 +71,25 @@ func init() {
 	VpcManager.SetVirtualObject(VpcManager)
 }
 
+func resolveGlobalVpcID(globalVpcExternalID, providerID string, fetch func() (string, error)) (string, error) {
+	if globalVpcExternalID == "" {
+		return "", nil
+	}
+	id, err := fetch()
+	if err != nil {
+		if errors.Cause(err) == sql.ErrNoRows {
+			return "", errors.Wrapf(cloudprovider.ErrNotFound,
+				"global vpc %s for provider %s is not synchronized", globalVpcExternalID, providerID)
+		}
+		return "", errors.Wrapf(err, "fetch global vpc %s for provider %s", globalVpcExternalID, providerID)
+	}
+	if id == "" {
+		return "", errors.Wrapf(cloudprovider.ErrNotFound,
+			"global vpc %s for provider %s is not synchronized", globalVpcExternalID, providerID)
+	}
+	return id, nil
+}
+
 type SVpc struct {
 	db.SEnabledStatusInfrasResourceBase
 	db.SExternalizedResourceBase
@@ -666,6 +685,22 @@ func (svpc *SVpc) syncRemoveCloudVpc(ctx context.Context, userCred mcclient.Toke
 }
 
 func (svpc *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenCredential, extVPC cloudprovider.ICloudVpc, provider *SCloudprovider) error {
+	var globalVpcID string
+	if globalVpcExternalID := extVPC.GetGlobalVpcId(); globalVpcExternalID != "" {
+		id, err := resolveGlobalVpcID(globalVpcExternalID, svpc.ManagerId, func() (string, error) {
+			gVpc, err := db.FetchByExternalIdAndManagerId(GlobalVpcManager, globalVpcExternalID, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", svpc.ManagerId)
+			})
+			if err != nil {
+				return "", err
+			}
+			return gVpc.GetId(), nil
+		})
+		if err != nil {
+			return err
+		}
+		globalVpcID = id
+	}
 	diff, err := db.UpdateWithLock(ctx, svpc, func() error {
 		if options.Options.EnableSyncName {
 			newName, _ := db.GenerateAlterName(svpc, extVPC.GetName())
@@ -689,15 +724,8 @@ func (svpc *SVpc) SyncWithCloudVpc(ctx context.Context, userCred mcclient.TokenC
 			svpc.CreatedAt = createdAt
 		}
 
-		if gId := extVPC.GetGlobalVpcId(); len(gId) > 0 {
-			gVpc, err := db.FetchByExternalIdAndManagerId(GlobalVpcManager, gId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
-				return q.Equals("manager_id", svpc.ManagerId)
-			})
-			if err != nil {
-				log.Errorf("FetchGlobalVpc %s error: %v", gId, err)
-			} else {
-				svpc.GlobalvpcId = gVpc.GetId()
-			}
+		if extVPC.GetGlobalVpcId() != "" {
+			svpc.GlobalvpcId = globalVpcID
 		}
 
 		return nil
@@ -732,15 +760,20 @@ func (manager *SVpcManager) newFromCloudVpc(ctx context.Context, userCred mcclie
 	if createdAt := extVPC.GetCreatedAt(); !createdAt.IsZero() {
 		vpc.CreatedAt = createdAt
 	}
-	if gId := extVPC.GetGlobalVpcId(); len(gId) > 0 {
-		gVpc, err := db.FetchByExternalIdAndManagerId(GlobalVpcManager, gId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
-			return q.Equals("manager_id", provider.Id)
+	if globalVpcExternalID := extVPC.GetGlobalVpcId(); globalVpcExternalID != "" {
+		globalVpcID, err := resolveGlobalVpcID(globalVpcExternalID, provider.Id, func() (string, error) {
+			gVpc, err := db.FetchByExternalIdAndManagerId(GlobalVpcManager, globalVpcExternalID, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+				return q.Equals("manager_id", provider.Id)
+			})
+			if err != nil {
+				return "", err
+			}
+			return gVpc.GetId(), nil
 		})
 		if err != nil {
-			log.Errorf("FetchGlobalVpc %s error: %v", gId, err)
-		} else {
-			vpc.GlobalvpcId = gVpc.GetId()
+			return nil, err
 		}
+		vpc.GlobalvpcId = globalVpcID
 	}
 
 	vpc.IsEmulated = extVPC.IsEmulated()
@@ -1814,20 +1847,30 @@ func (svpc *SVpc) GetAccepterVpcPeeringConnectionByExtId(extId string) (*SVpcPee
 }
 
 func (svpc *SVpc) BackSycVpcPeeringConnectionsVpc(exts []cloudprovider.ICloudVpcPeeringConnection) compare.SyncResult {
+	return backSyncVpcPeeringConnectionsVpc(exts, svpc.GetAccepterVpcPeeringConnectionByExtId, func(peering *SVpcPeeringConnection) error {
+		_, err := db.Update(peering, func() error {
+			peering.PeerVpcId = svpc.GetId()
+			return nil
+		})
+		return err
+	})
+}
+
+func backSyncVpcPeeringConnectionsVpc(exts []cloudprovider.ICloudVpcPeeringConnection, lookup func(string) (*SVpcPeeringConnection, error), update func(*SVpcPeeringConnection) error) compare.SyncResult {
 	result := compare.SyncResult{}
 	for i := range exts {
-		Peering, err := svpc.GetAccepterVpcPeeringConnectionByExtId(exts[i].GetId())
+		Peering, err := lookup(exts[i].GetId())
 		if err != nil {
-			if errors.Cause(err) != errors.ErrNotFound {
-				result.Error(err)
+			if errors.Cause(err) == errors.ErrNotFound || errors.Cause(err) == sql.ErrNoRows {
+				// The requester can be outside the managed inventory or not yet
+				// imported. Keep the scoped lookup and process later connections.
+				continue
 			}
+			result.Error(err)
 			break
 		}
 		if len(Peering.PeerVpcId) == 0 {
-			_, err := db.Update(Peering, func() error {
-				Peering.PeerVpcId = svpc.GetId()
-				return nil
-			})
+			err := update(Peering)
 			if err != nil {
 				result.Error(err)
 				break

@@ -330,6 +330,10 @@ type SAccountUsage struct {
 }
 
 type CloudaccountDetail struct {
+	// Durable resource synchronization counts, including queued and retrying work.
+	SyncQueueCounts map[string]int `json:"sync_queue_counts,omitempty"`
+	SyncQueueError  string         `json:"sync_queue_error,omitempty"`
+
 	apis.EnabledStatusInfrasResourceBaseDetails
 	SCloudaccount
 
@@ -558,9 +562,10 @@ type CloudaccountProjectMappingInput struct {
 }
 
 type SyncRangeInput struct {
-	Force    bool `json:"force"`
-	FullSync bool `json:"full_sync"`
-	DeepSync bool `json:"deep_sync"`
+	RetryFailedRun string `json:"retry_failed_run"`
+	Force          bool   `json:"force"`
+	FullSync       bool   `json:"full_sync"`
+	DeepSync       bool   `json:"deep_sync"`
 	// 极速模式(差量更新)
 	Xor bool `json:"xor"`
 

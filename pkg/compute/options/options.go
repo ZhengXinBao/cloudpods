@@ -154,13 +154,32 @@ type ComputeOptions struct {
 
 	MinimalIpAddrReusedIntervalSeconds int `help:"Minimal seconds when a release IP address can be reallocate" default:"30"`
 
-	CloudSyncWorkerCount             int `help:"how many current synchronization threads" default:"5"`
-	CloudProviderSyncWorkerCount     int `help:"how many current providers synchronize their regions, practically no limit" default:"10"`
-	CloudAccountProbeWorkerCount     int `help:"how many workers for auto cloud account status probe" default:"10"`
-	CloudAccountSyncProbeWorkerCount int `help:"how many workers for cloud account sync probe before resource sync" default:"10"`
-	CloudAutoSyncIntervalSeconds     int `help:"frequency to check auto sync tasks" default:"300"`
-	DefaultSyncIntervalSeconds       int `help:"minimal synchronization interval, default 15 minutes" default:"900"`
-	MaxCloudAccountErrorCount        int `help:"maximal consecutive error count allow for a cloud account" default:"5"`
+	IndependentCloudSync         bool     `help:"Route allowlisted cloud accounts to the durable sync queue" default:"false"`
+	IndependentCloudSyncAccounts []string `help:"Cloud account IDs routed to independent workers; * enables all; empty disables routing"`
+	SyncWorkerGlobalLimit        int      `help:"Maximum live independent jobs across all worker replicas" default:"16"`
+	SyncWorkerAccountLimit       int      `help:"Maximum live independent jobs per cloud account across replicas" default:"8"`
+	SyncWorkerProviderLimit      int      `help:"Maximum live independent jobs per provider across replicas" default:"2"`
+	SyncWorkerConcurrency        int      `help:"Concurrent region jobs per independent worker" default:"4"`
+	SyncWorkerLeaseSeconds       int      `help:"Durable job lease duration" default:"120"`
+	SyncWorkerHeartbeatSeconds   int      `help:"Job heartbeat interval" default:"15"`
+	SyncWorkerPollSeconds        int      `help:"Idle queue poll interval" default:"2"`
+	SyncWorkerMaxAttempts        int      `help:"Maximum execution attempts including crash recovery" default:"3"`
+	SyncWorkerRetrySeconds       int      `help:"Delay before retrying failed resource sync" default:"60"`
+	SyncWorkerShutdownSeconds    int      `help:"Maximum worker drain time before forced exit" default:"90"`
+	SyncWorkerMigrate            bool     `help:"Create independent sync queue tables and exit" default:"false"`
+	SyncWorkerInspectAccount     string   `help:"Print queue progress for this cloud account and exit"`
+	SyncQueueRetentionDays       int      `help:"Days to keep finished independent sync jobs; <= 0 disables purge" default:"7"`
+
+	CloudSyncWorkerCount               int `help:"how many current synchronization threads" default:"16"`
+	CloudProviderSyncWorkerCount       int `help:"how many current providers synchronize their regions, practically no limit" default:"10"`
+	CloudAccountProbeWorkerCount       int `help:"how many workers for auto cloud account status probe" default:"10"`
+	CloudAccountSyncProbeWorkerCount   int `help:"how many workers for cloud account sync probe before resource sync" default:"10"`
+	CloudAutoSyncIntervalSeconds       int `help:"frequency to check auto sync tasks" default:"300"`
+	CloudRegionDiscoverIntervalSeconds int `help:"min seconds before re-probing a disabled region for new cloud resources" default:"3600"`
+	CloudRegionDiscoverBatchSize       int `help:"max already-probed empty regions to re-check per account status check" default:"30"`
+	CloudRegionDiscoverConcurrency     int `help:"max concurrent cheap cloud-region resource probes" default:"10"`
+	DefaultSyncIntervalSeconds         int `help:"minimal synchronization interval, default 15 minutes" default:"900"`
+	MaxCloudAccountErrorCount          int `help:"maximal consecutive error count allow for a cloud account" default:"5"`
 
 	EnableSyncName bool `help:"enable name sync" default:"true"`
 

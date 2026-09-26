@@ -115,6 +115,18 @@ func StartServiceWithJobsAndApp(jobs func(cron *cronman.SCronJobManager), appCll
 		})
 
 	cloudcommon.InitDB(dbOpts)
+	if opts.IndependentCloudSync {
+		dialect, _, err := dbOpts.GetDBConnection()
+		if err != nil || dialect != "mysql" || opts.LockmanMethod != common_options.LockMethodEtcd {
+			log.Fatalf("independent cloud sync requires MySQL and etcd locking")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err = models.CloudSyncQueue().CheckSchema(ctx)
+		cancel()
+		if err != nil {
+			log.Fatalf("independent sync queue not ready: %v; run sync-worker --sync-worker-migrate first", err)
+		}
+	}
 
 	InitHandlers(app, opts.IsSlaveNode)
 	if appCllback != nil {
@@ -174,6 +186,11 @@ func startMasterTasks(opts *options.ComputeOptions, dbOpts *common_options.DBOpt
 		cachesync.StartTenantCacheSync(opts.TenantCacheExpireSeconds)
 
 		cron := cronman.InitCronJobManager(true, options.Options.CronJobWorkerCount, options.Options.TimeZone)
+		if opts.IndependentCloudSync {
+			cron.AddJobAtIntervals("ReconcileIndependentSyncRuns", 10*time.Second, cloudaccount_tasks.ReconcileIndependentSyncRuns)
+			cron.AddJobAtIntervals("PurgeFinishedSyncJobs", time.Hour, cloudaccount_tasks.PurgeFinishedSyncJobs)
+		}
+
 		cron.AddJobAtIntervals("CleanPendingDeleteServers", time.Duration(opts.PendingDeleteCheckSeconds)*time.Second, models.GuestManager.CleanPendingDeleteServers)
 		cron.AddJobAtIntervals("CleanPendingDeleteDisks", time.Duration(opts.PendingDeleteCheckSeconds)*time.Second, models.DiskManager.CleanPendingDeleteDisks)
 		if opts.PrepaidExpireCheck {

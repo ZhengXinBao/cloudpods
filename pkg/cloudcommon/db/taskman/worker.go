@@ -64,12 +64,22 @@ func getTaskWorkMan(task *STask) *appsrv.SWorkerManager {
 }*/
 
 type taskTask struct {
-	taskId string
-	data   jsonutils.JSONObject
+	taskId        string
+	expectedStage string
+	data          jsonutils.JSONObject
 }
 
 func (t *taskTask) Run() {
-	TaskManager.execTask(t.taskId, t.data)
+	if t.expectedStage == "" {
+		TaskManager.execTask(t.taskId, t.data)
+		return
+	}
+	task := TaskManager.fetchTask(t.taskId)
+	if task == nil || task.Stage != t.expectedStage {
+		return
+	}
+	task.expectedRunStage = t.expectedStage
+	TaskManager.execTaskObject(task, t.data)
 }
 
 func (t *taskTask) Dump() string {
@@ -77,6 +87,9 @@ func (t *taskTask) Dump() string {
 }
 
 func runTask(taskId string, data jsonutils.JSONObject) error {
+	return runTaskAtStage(taskId, data, "")
+}
+func runTaskAtStage(taskId string, data jsonutils.JSONObject, expectedStage string) error {
 	baseTask := TaskManager.fetchTask(taskId)
 	if baseTask == nil {
 		return fmt.Errorf("no such task??? task_id=%s", taskId)
@@ -84,8 +97,9 @@ func runTask(taskId string, data jsonutils.JSONObject) error {
 	worker := getTaskWorkMan(baseTask)
 
 	task := &taskTask{
-		taskId: taskId,
-		data:   data,
+		taskId:        taskId,
+		expectedStage: expectedStage,
+		data:          data,
 	}
 
 	isOk := worker.Run(task, nil, func(err error) {

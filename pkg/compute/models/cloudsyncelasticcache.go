@@ -43,8 +43,11 @@ func syncElasticcaches(
 		return remoteRegion.GetIElasticcaches()
 	}()
 	if err != nil {
+		if skipOptionalCloudSync(err, "GetIElasticcaches") {
+			return
+		}
 		msg := fmt.Sprintf("GetIElasticcaches for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
-		log.Errorf("%s", msg)
+		cloudSyncError(ctx, "%s", msg)
 		return
 	}
 
@@ -58,6 +61,16 @@ func syncElasticcaches(
 	msg := result.Result()
 	log.Infof("SyncElasticcaches for region %s provider %s result: %s", localRegion.Name, provider.Name, msg)
 	if result.IsError() {
+		return
+	}
+	expected := make([]string, 0, len(extCacheDBs))
+	for _, resource := range extCacheDBs {
+		expected = append(expected, resource.GetGlobalId())
+	}
+	// Use the full persisted regional inventory, including common Xor records.
+	q := ElasticcacheManager.Query().Equals("manager_id", provider.Id).Equals("cloudregion_id", localRegion.Id)
+	if err := verifyCloudInventoryQuery(expected, q); err != nil {
+		cloudSyncError(ctx, "cache inventory provider %s region %s: %v", provider.Id, localRegion.Id, err)
 		return
 	}
 	db.OpsLog.LogEvent(provider, db.ACT_SYNC_CLOUD_ELASTIC_CACHE, msg, userCred)
@@ -82,7 +95,7 @@ func syncElasticcacheParameters(ctx context.Context, userCred mcclient.TokenCred
 	}()
 	if err != nil {
 		msg := fmt.Sprintf("GetIElasticcacheParameters for dbinstance %s failed %s", remoteInstance.GetName(), err)
-		log.Errorf("%s", msg)
+		cloudSyncError(ctx, "%s", msg)
 		return
 	}
 
@@ -106,7 +119,7 @@ func syncElasticcacheAccounts(ctx context.Context, userCred mcclient.TokenCreden
 	}()
 	if err != nil {
 		msg := fmt.Sprintf("GetIElasticcacheAccounts for dbinstance %s failed %s", remoteInstance.GetName(), err)
-		log.Errorf("%s", msg)
+		cloudSyncError(ctx, "%s", msg)
 		return
 	}
 
@@ -130,7 +143,7 @@ func syncElasticcacheAcls(ctx context.Context, userCred mcclient.TokenCredential
 		if errors.Cause(err) == cloudprovider.ErrNotSupported {
 			log.Warningf("%s", msg)
 		} else {
-			log.Errorf("%s", msg)
+			cloudSyncError(ctx, "%s", msg)
 		}
 		return
 	}
@@ -152,7 +165,7 @@ func syncElasticcacheBackups(ctx context.Context, userCred mcclient.TokenCredent
 	}()
 	if err != nil {
 		msg := fmt.Sprintf("GetIElasticcacheBackups for dbinstance %s failed %s", remoteInstance.GetName(), err)
-		log.Errorf("%s", msg)
+		cloudSyncError(ctx, "%s", msg)
 		return
 	}
 
@@ -176,7 +189,7 @@ func syncElasticcacheSecgroups(ctx context.Context, userCred mcclient.TokenCrede
 		if errors.Cause(err) == cloudprovider.ErrNotSupported {
 			log.Warningf("%s", msg)
 		} else {
-			log.Errorf("%s", msg)
+			cloudSyncError(ctx, "%s", msg)
 		}
 		return
 	}

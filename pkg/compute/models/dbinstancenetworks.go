@@ -115,14 +115,8 @@ func (manager *SDBInstanceNetworkManager) SyncDBInstanceNetwork(ctx context.Cont
 		return result
 	}
 
-	localMap := map[string]SDBInstanceNetwork{}
-	for i := range networks {
-		localMap[networks[i].NetworkId+networks[i].IpAddr] = networks[i]
-	}
-	remoteMap := map[string]bool{}
-
-	for i := range exts {
-		_network, err := db.FetchByExternalIdAndManagerId(NetworkManager, exts[i].NetworkId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
+	return reconcileDBInstanceNetworks(networks, exts, func(externalId string) (*SNetwork, error) {
+		model, err := db.FetchByExternalIdAndManagerId(NetworkManager, externalId, func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 			wire := WireManager.Query().SubQuery()
 			vpc := VpcManager.Query().SubQuery()
 			return q.Join(wire, sqlchemy.Equals(wire.Field("id"), q.Field("wire_id"))).
@@ -130,25 +124,58 @@ func (manager *SDBInstanceNetworkManager) SyncDBInstanceNetwork(ctx context.Cont
 				Filter(sqlchemy.Equals(vpc.Field("manager_id"), dbinstance.ManagerId))
 		})
 		if err != nil {
+			return nil, errors.Wrapf(err, "resolve DB subnet %q for provider %s", externalId, dbinstance.ManagerId)
+		}
+		return model.(*SNetwork), nil
+	}, func(networkId, ip string) error {
+		return manager.newNetwork(ctx, userCred, dbinstance.Id, networkId, ip)
+	}, func(network *SDBInstanceNetwork) error {
+		return network.Detach(ctx, userCred)
+	})
+}
+
+func reconcileDBInstanceNetworks(networks []SDBInstanceNetwork, exts []cloudprovider.SDBInstanceNetwork, resolve func(string) (*SNetwork, error), add func(string, string) error, detach func(*SDBInstanceNetwork) error) compare.SyncResult {
+	result := compare.SyncResult{}
+	localMap := map[string]SDBInstanceNetwork{}
+	for i := range networks {
+		localMap[networks[i].NetworkId+networks[i].IpAddr] = networks[i]
+	}
+	remoteMap := map[string]bool{}
+
+	for i := range exts {
+		ext := exts[i]
+		network, err := resolve(ext.NetworkId)
+		if err != nil {
 			result.Error(err)
 			continue
 		}
-		network := _network.(*SNetwork)
-		exts[i].NetworkId = network.GetId()
-		remoteMap[exts[i].NetworkId+exts[i].IP] = true
-		_, ok := localMap[exts[i].NetworkId+exts[i].IP]
+		ext.NetworkId = network.GetId()
+		remoteMap[ext.NetworkId+ext.IP] = true
+		_, ok := localMap[ext.NetworkId+ext.IP]
+		if ext.IP == "" {
+			// An unspecified managed-service IP is not proof that a previously
+			// observed address disappeared. Preserve all associations in this subnet.
+			for j := range networks {
+				if networks[j].NetworkId == ext.NetworkId {
+					remoteMap[networks[j].NetworkId+networks[j].IpAddr] = true
+					ok = true
+				}
+			}
+		}
 		if !ok {
-			ipAddr, err := netutils.NewIPV4Addr(exts[i].IP)
-			if err != nil {
-				result.AddError(errors.Wrapf(err, "invalid ip"))
+			if ext.IP != "" {
+				ipAddr, err := netutils.NewIPV4Addr(ext.IP)
+				if err != nil {
+					result.AddError(errors.Wrapf(err, "invalid ip"))
+					continue
+				}
+				if !network.IsAddressInRange(ipAddr) {
+					result.AddError(fmt.Errorf("IP %s not in network %s(%s) address range", ext.IP, network.Name, network.Id))
+					continue
+				}
 			}
 
-			if !network.IsAddressInRange(ipAddr) {
-				result.AddError(fmt.Errorf("IP %s not in network %s(%s) address range", exts[i].IP, network.Name, network.Id))
-				continue
-			}
-
-			err = manager.newNetwork(ctx, userCred, dbinstance.Id, exts[i].NetworkId, exts[i].IP)
+			err = add(ext.NetworkId, ext.IP)
 			if err != nil {
 				result.AddError(err)
 				continue
@@ -156,12 +183,17 @@ func (manager *SDBInstanceNetworkManager) SyncDBInstanceNetwork(ctx context.Cont
 			result.Add()
 		}
 	}
+	// A failed lookup/validation/insert leaves the inventory incomplete. Never
+	// remove working associations using that incomplete view.
+	if result.IsError() {
+		return result
+	}
 	for i := range networks {
 		_, ok := remoteMap[networks[i].NetworkId+networks[i].IpAddr]
 		if ok {
 			continue
 		}
-		err = networks[i].Detach(ctx, userCred)
+		err := detach(&networks[i])
 		if err != nil {
 			result.DeleteError(err)
 			continue

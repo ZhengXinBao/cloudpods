@@ -373,6 +373,17 @@ func (sc *SStoragecache) getCustomdCachedImages() ([]SStoragecachedimage, error)
 	return images, nil
 }
 
+func (sc *SStoragecache) getSystemCachedImages() ([]SStoragecachedimage, error) {
+	images := make([]SStoragecachedimage, 0)
+	sq := CachedimageManager.Query("id").Equals("image_type", cloudprovider.ImageTypeSystem).SubQuery()
+	q := StoragecachedimageManager.Query().Equals("storagecache_id", sc.Id).In("cachedimage_id", sq)
+	err := db.FetchModelObjects(StoragecachedimageManager, q, &images)
+	if err != nil {
+		return nil, errors.Wrapf(err, "db.FetchModelObjects")
+	}
+	return images, nil
+}
+
 func (sc *SStoragecache) getCachedImageCount() int {
 	images, _ := sc.getCachedImages()
 	return len(images)
@@ -655,28 +666,51 @@ func (sc *SStoragecache) SyncCloudImages(
 		return result
 	}
 	if driver.IsPublicCloud() {
-		err = func() error {
-			err := region.SyncCloudImages(ctx, userCred, false, xor)
+		if driver.NeedSyncSkuFromCloud() {
+			localCachedImages, err := sc.getSystemCachedImages()
 			if err != nil {
-				return errors.Wrapf(err, "SyncCloudImages")
+				result.Error(errors.Wrapf(err, "getSystemCachedImages"))
+				return result
 			}
-			err = sc.CheckCloudimages(ctx, userCred, region.Name, region.Id)
+			remoteImages, err := iStoragecache.GetICloudImages()
 			if err != nil {
-				return errors.Wrapf(err, "CheckCloudimages")
+				result.Error(errors.Wrapf(err, "GetICloudImages"))
+				return result
 			}
-			return nil
-		}()
-		if err != nil {
-			log.Errorf("sync public image error: %v", err)
+			systemResult := sc.syncCloudImages(ctx, userCred, localCachedImages, remoteImages, xor)
+			mergeSyncResult(&result, &systemResult)
+
+			localCachedImages, err = sc.getCustomdCachedImages()
+			if err != nil {
+				result.Error(errors.Wrapf(err, "getCustomdCachedImages"))
+				return result
+			}
+			remoteImages, err = iStoragecache.GetICustomizedCloudImages()
+			if err != nil {
+				result.Error(errors.Wrapf(err, "GetICustomizedCloudImages"))
+				return result
+			}
+			customResult := sc.syncCloudImages(ctx, userCred, localCachedImages, remoteImages, xor)
+			mergeSyncResult(&result, &customResult)
+			return result
 		}
 
-		log.Debugln("localCachedImages started")
+		err = region.SyncCloudImages(ctx, userCred, false, xor)
+		if err != nil {
+			result.Error(errors.Wrapf(err, "SyncCloudImages"))
+			return result
+		}
+		err = sc.CheckCloudimages(ctx, userCred, region.Name, region.Id)
+		if err != nil {
+			result.Error(errors.Wrapf(err, "CheckCloudimages"))
+			return result
+		}
+
 		localCachedImages, err := sc.getCustomdCachedImages()
 		if err != nil {
 			result.Error(errors.Wrapf(err, "getCustomdCachedImages"))
 			return result
 		}
-		log.Debugf("localCachedImages %d", len(localCachedImages))
 		remoteImages, err := iStoragecache.GetICustomizedCloudImages()
 		if err != nil {
 			result.Error(errors.Wrapf(err, "GetICustomizedCloudImages"))
@@ -700,6 +734,18 @@ func (sc *SStoragecache) SyncCloudImages(
 	}
 
 	return result
+}
+
+func mergeSyncResult(dst, src *compare.SyncResult) {
+	dst.AddCnt += src.AddCnt
+	dst.AddErrCnt += src.AddErrCnt
+	dst.UpdateCnt += src.UpdateCnt
+	dst.UpdateErrCnt += src.UpdateErrCnt
+	dst.DelCnt += src.DelCnt
+	dst.DelErrCnt += src.DelErrCnt
+	if src.IsError() {
+		dst.Error(src.AllError())
+	}
 }
 
 func (cache *SStoragecache) syncCloudImages(

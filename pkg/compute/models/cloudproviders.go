@@ -245,7 +245,8 @@ func (cprvd *SCloudprovider) ValidateDeleteCondition(ctx context.Context, info j
 	if cprvd.GetEnabled() {
 		return httperrors.NewInvalidStatusError("provider is enabled")
 	}
-	if cprvd.SyncStatus != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
+	if cprvd.SyncStatus != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE ||
+		cprvd.GetSyncStatus2() != api.CLOUD_PROVIDER_SYNC_STATUS_IDLE {
 		return httperrors.NewInvalidStatusError("provider is not idle")
 	}
 	return cprvd.SEnabledStatusStandaloneResourceBase.ValidateDeleteCondition(ctx, nil)
@@ -516,25 +517,42 @@ func (sr *SSyncRange) GetRegionIds() ([]string, error) {
 	return regionIds, nil
 }
 
-func (sr *SSyncRange) NeedSyncResource(res string) bool {
-	if sr.FullSync {
+func isFastSyncResource(res string) bool {
+	switch res {
+	case cloudprovider.CLOUD_CAPABILITY_COMPUTE,
+		cloudprovider.CLOUD_CAPABILITY_NETWORK,
+		cloudprovider.CLOUD_CAPABILITY_EIP,
+		cloudprovider.CLOUD_CAPABILITY_LOADBALANCER,
+		cloudprovider.CLOUD_CAPABILITY_RDS,
+		cloudprovider.CLOUD_CAPABILITY_CACHE,
+		cloudprovider.CLOUD_CAPABILITY_NAT:
 		return true
+	default:
+		return false
 	}
+}
 
-	if len(sr.Resources) == 0 {
+func (sr *SSyncRange) NeedSyncResource(res string) bool {
+	if len(sr.Resources) > 0 {
+		return utils.IsInStringArray(res, sr.Resources)
+	}
+	if sr.FullSync || sr.DeepSync {
 		return true
 	}
-	return utils.IsInStringArray(res, sr.Resources)
+	return isFastSyncResource(res)
+}
+
+func shouldSyncRegionZones(syncRange *SSyncRange) bool {
+	if syncRange == nil {
+		return false
+	}
+	return syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_COMPUTE) ||
+		syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_IMAGE)
 }
 
 func (sr *SSyncRange) NeedSyncInfo() bool {
-	if sr.FullSync {
-		return true
-	}
-	if len(sr.Region) > 0 || len(sr.Zone) > 0 || len(sr.Host) > 0 || len(sr.Resources) > 0 {
-		return true
-	}
-	return false
+	// An empty range is the default account sync request, not a no-op.
+	return true
 }
 
 func (sr *SSyncRange) normalizeRegionIds(ctx context.Context) error {
@@ -645,9 +663,6 @@ func (cprvd *SCloudprovider) PerformSync(ctx context.Context, userCred mcclient.
 		return nil, httperrors.NewInvalidStatusError("Cloudaccount disabled")
 	}
 	syncRange := SSyncRange{input}
-	if syncRange.FullSync || len(syncRange.Region) > 0 || len(syncRange.Zone) > 0 || len(syncRange.Host) > 0 || len(syncRange.Resources) > 0 {
-		syncRange.DeepSync = true
-	}
 	syncRange.SkipSyncResources = []string{}
 	if account.SkipSyncResources != nil {
 		for _, res := range *account.SkipSyncResources {
@@ -661,6 +676,9 @@ func (cprvd *SCloudprovider) PerformSync(ctx context.Context, userCred mcclient.
 }
 
 func (cprvd *SCloudprovider) StartSyncCloudProviderInfoTask(ctx context.Context, userCred mcclient.TokenCredential, syncRange *SSyncRange, parentTaskId string) error {
+	if err := ensureLegacySyncAllowed(ctx, cprvd.CloudaccountId); err != nil {
+		return err
+	}
 	params := jsonutils.NewDict()
 	if syncRange != nil {
 		params.Add(jsonutils.Marshal(syncRange), "sync_range")
@@ -669,10 +687,9 @@ func (cprvd *SCloudprovider) StartSyncCloudProviderInfoTask(ctx context.Context,
 	if err != nil {
 		return errors.Wrapf(err, "NewTask")
 	}
-	if cloudaccount, _ := cprvd.GetCloudaccount(); cloudaccount != nil {
-		cloudaccount.MarkSyncing(userCred)
+	if !IndependentSyncAccount(cprvd.CloudaccountId) {
+		cprvd.markStartSync(userCred, syncRange)
 	}
-	cprvd.markStartSync(userCred, syncRange)
 	db.OpsLog.LogEvent(cprvd, db.ACT_SYNC_HOST_START, "", userCred)
 	return task.ScheduleRun(nil)
 }
@@ -772,12 +789,26 @@ func (cprvd *SCloudprovider) markStartSync(userCred mcclient.TokenCredential, sy
 		return errors.Wrapf(err, "db.Update")
 	}
 	cprs := cprvd.GetCloudproviderRegions()
+	regionIds := []string{}
+	force := false
+	if syncRange != nil {
+		ids, err := syncRange.GetRegionIds()
+		if err != nil {
+			return errors.Wrap(err, "GetRegionIds")
+		}
+		regionIds = ids
+		force = syncRange.Force
+	}
+	minInterval := time.Duration(options.Options.DefaultSyncIntervalSeconds) * time.Second
+	now := time.Now()
 	for i := range cprs {
-		if cprs[i].Enabled {
-			err := cprs[i].markStartingSync(userCred, syncRange)
-			if err != nil {
-				return errors.Wrap(err, "cprs[i].markStartingSync")
-			}
+		explicit := len(regionIds) > 0 && utils.IsInStringArray(cprs[i].CloudregionId, regionIds)
+		if !cprs[i].shouldSubmitResourceSync(explicit, force, now, minInterval) {
+			continue
+		}
+		err := cprs[i].markStartingSync(userCred, syncRange)
+		if err != nil {
+			return errors.Wrap(err, "cprs[i].markStartingSync")
 		}
 	}
 	return nil
@@ -798,6 +829,7 @@ func (cprvd *SCloudprovider) markSyncing(userCred mcclient.TokenCredential) erro
 }
 
 func (cprvd *SCloudprovider) markEndSyncWithLock(ctx context.Context, userCred mcclient.TokenCredential, deepSync bool) error {
+	_ = deepSync
 	err := func() error {
 		lockman.LockObject(ctx, cprvd)
 		defer lockman.ReleaseObject(ctx, cprvd)
@@ -817,15 +849,7 @@ func (cprvd *SCloudprovider) markEndSyncWithLock(ctx context.Context, userCred m
 		return nil
 	}()
 
-	if err != nil {
-		return err
-	}
-
-	account, err := cprvd.GetCloudaccount()
-	if err != nil {
-		return errors.Wrapf(err, "GetCloudaccount")
-	}
-	return account.MarkEndSyncWithLock(ctx, userCred, deepSync)
+	return err
 }
 
 func (cprvd *SCloudprovider) markEndSync(userCred mcclient.TokenCredential) error {
@@ -1126,6 +1150,21 @@ func (manager *SCloudproviderManager) FetchCustomizeColumns(
 		cprsMap[cprs[i].CloudproviderId] += 1
 	}
 
+	queueProviderIDs := make([]string, 0, len(providerIds))
+	for i := range providerIds {
+		if IndependentSyncAccount(accountIds[i]) {
+			queueProviderIDs = append(queueProviderIDs, providerIds[i])
+		}
+	}
+	queueProviderCounts := map[string]int{}
+	var queueErr error
+	if len(queueProviderIDs) > 0 {
+		queueProviderCounts, queueErr = CloudSyncQueue().ActiveProviderJobCounts(ctx, queueProviderIDs)
+		if queueErr != nil {
+			log.Errorf("ActiveProviderJobCounts: %v", queueErr)
+		}
+	}
+
 	accounts := make(map[string]SCloudaccount)
 	err = db.FetchStandaloneObjectsByIds(CloudaccountManager, accountIds, &accounts)
 	if err != nil {
@@ -1176,6 +1215,13 @@ func (manager *SCloudproviderManager) FetchCustomizeColumns(
 		rows[i].SyncStatus2 = api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
 		if _, ok := cprsMap[providerIds[i]]; ok {
 			rows[i].SyncStatus2 = api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING
+		}
+		if IndependentSyncAccount(accountIds[i]) {
+			if queueErr != nil {
+				rows[i].SyncStatus2 = api.CLOUD_PROVIDER_SYNC_STATUS_ERROR
+			} else {
+				rows[i].SyncStatus2 = syncStatusWithQueue(rows[i].SyncStatus2, queueProviderCounts[providerIds[i]])
+			}
 		}
 		if usage, ok := usages[providerIds[i]]; ok {
 			rows[i].SCloudproviderUsage = usage
@@ -1588,20 +1634,33 @@ func (provider *SCloudprovider) resetAutoSync() {
 }
 
 func (provider *SCloudprovider) syncCloudproviderRegions(ctx context.Context, userCred mcclient.TokenCredential, syncRange SSyncRange, wg *sync.WaitGroup) {
+	regionIds, err := syncRange.GetRegionIds()
+	if err != nil {
+		log.Errorf("GetRegionIds for %s: %v", provider.Name, err)
+		return
+	}
 	provider.markSyncing(userCred)
 	cprs := provider.GetCloudproviderRegions()
-	regionIds, _ := syncRange.GetRegionIds()
+	minInterval := time.Duration(options.Options.DefaultSyncIntervalSeconds) * time.Second
+	now := time.Now()
 	syncCnt := 0
 	for i := range cprs {
-		if cprs[i].Enabled && cprs[i].CanSync() && (len(regionIds) == 0 || utils.IsInStringArray(cprs[i].CloudregionId, regionIds)) {
-			syncCnt += 1
-			if wg != nil {
-				wg.Add(1)
+		explicit := len(regionIds) > 0 && utils.IsInStringArray(cprs[i].CloudregionId, regionIds)
+		if !cprs[i].shouldSubmitResourceSync(explicit, syncRange.Force, now, minInterval) {
+			if err := cprs[i].cancelStartingSync(userCred); err != nil {
+				log.Errorf("cancelStartingSync %s/%s: %v", provider.Id, cprs[i].CloudregionId, err)
 			}
-			cprs[i].submitSyncTask(ctx, userCred, syncRange)
-			if wg != nil {
-				wg.Done()
-			}
+			continue
+		}
+		syncCnt += 1
+		if wg != nil {
+			wg.Add(1)
+		}
+		if err := cprs[i].submitSyncTask(ctx, userCred, syncRange); err != nil {
+			log.Errorf("submit region sync: %v", err)
+		}
+		if wg != nil {
+			wg.Done()
 		}
 	}
 	if syncCnt == 0 {
@@ -1797,7 +1856,14 @@ func (cprvd *SCloudprovider) GetSyncStatus2() string {
 	if cnt > 0 {
 		return api.CLOUD_PROVIDER_SYNC_STATUS_SYNCING
 	} else {
-		return api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
+		if !IndependentSyncAccount(cprvd.CloudaccountId) {
+			return api.CLOUD_PROVIDER_SYNC_STATUS_IDLE
+		}
+		activeJobs, err := CloudSyncQueue().ActiveProviderJobs(context.Background(), cprvd.Id)
+		if err != nil {
+			return api.CLOUD_PROVIDER_SYNC_STATUS_ERROR
+		}
+		return syncStatusWithQueue(api.CLOUD_PROVIDER_SYNC_STATUS_IDLE, activeJobs)
 	}
 }
 

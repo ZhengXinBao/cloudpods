@@ -2953,17 +2953,11 @@ func (hh *SHost) Attach2Wire(ctx context.Context, userCred mcclient.TokenCredent
 }
 
 func (hh *SHost) newCloudHostWire(ctx context.Context, userCred mcclient.TokenCredential, extWire cloudprovider.ICloudWire) error {
-	wireObj, err := db.FetchByExternalIdAndManagerId(WireManager, extWire.GetGlobalId(), func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
-		sq := VpcManager.Query().SubQuery()
-		return q.Join(sq, sqlchemy.Equals(sq.Field("id"), q.Field("vpc_id"))).Filter(sqlchemy.Equals(sq.Field("manager_id"), hh.ManagerId))
-	})
+	wire, err := WireManager.FetchWireByCloudWire(hh.ManagerId, extWire)
 	if err != nil {
-		log.Errorf("%s", err)
-		return nil
+		return errors.Wrap(err, "resolve cloud host wire")
 	}
-	wire := wireObj.(*SWire)
-	err = hh.Attach2Wire(ctx, userCred, wire)
-	return err
+	return hh.Attach2Wire(ctx, userCred, wire)
 }
 
 type SGuestSyncResult struct {
@@ -6990,7 +6984,7 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 					if provider.Provider != api.CLOUD_PROVIDER_PROXMOX {
 						extWire := extNics[j].GetIWire()
 						if extWire != nil {
-							wire, err := WireManager.FetchWireByExternalId(provider.Id, extWire.GetGlobalId())
+							wire, err := WireManager.FetchWireByCloudWire(provider.Id, extWire)
 							if err != nil {
 								result.AddError(err)
 							} else {
@@ -7104,6 +7098,21 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 				}
 			}
 		}
+		if provider.Provider != api.CLOUD_PROVIDER_PROXMOX {
+			if remoteWire := enables[i].GetIWire(); remoteWire != nil {
+				wire, err := WireManager.FetchWireByCloudWire(provider.Id, remoteWire)
+				if err != nil {
+					result.AddError(err)
+					continue
+				}
+				if netif.WireId != wire.Id {
+					if _, err := db.Update(netif, func() error { netif.WireId = wire.Id; return nil }); err != nil {
+						result.AddError(err)
+						continue
+					}
+				}
+			}
+		}
 		err = host.EnableNetif(ctx, userCred, netif, "", ipAddr, "", "", "", true, true, false, false)
 		if err != nil {
 			result.AddError(err)
@@ -7132,9 +7141,10 @@ func (host *SHost) SyncHostExternalNics(ctx context.Context, userCred mcclient.T
 		if provider.Provider != api.CLOUD_PROVIDER_PROXMOX {
 			extWire := extNic.GetIWire()
 			if extWire != nil {
-				wire, err := WireManager.FetchWireByExternalId(provider.Id, extWire.GetGlobalId())
+				wire, err := WireManager.FetchWireByCloudWire(provider.Id, extWire)
 				if err != nil {
 					result.AddError(err)
+					continue
 				} else {
 					wireId = wire.Id
 				}

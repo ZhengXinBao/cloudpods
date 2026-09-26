@@ -656,13 +656,19 @@ func (self *SCloudregion) SyncIpSets(
 }
 
 func (provider *SCloudprovider) GetIpSets() ([]SIpSet, error) {
-	q := IpSetManager.Query().Equals("manager_id", provider.Id)
+	q := providerIpSetQuery(provider.Id)
 	ret := []SIpSet{}
 	err := db.FetchModelObjects(IpSetManager, q, &ret)
 	if err != nil {
 		return nil, errors.Wrapf(err, "db.FetchModelObjects")
 	}
 	return ret, nil
+}
+
+func providerIpSetQuery(providerID string) *sqlchemy.SQuery {
+	return IpSetManager.Query().
+		Equals("manager_id", providerID).
+		IsNullOrEmpty("cloudregion_id")
 }
 
 func (provider *SCloudprovider) SyncIpSets(

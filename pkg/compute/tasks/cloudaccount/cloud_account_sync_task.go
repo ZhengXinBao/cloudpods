@@ -40,6 +40,10 @@ func init() {
 
 func (self *CloudAccountSyncInfoTask) OnInit(ctx context.Context, obj db.IStandaloneModel, body jsonutils.JSONObject) {
 	cloudaccount := obj.(*models.SCloudaccount)
+	if retryOf, _ := self.Params.GetString("retry_of"); retryOf != "" {
+		self.prepareRetrySync(ctx, cloudaccount, retryOf)
+		return
+	}
 
 	if cloudaccount.Provider == api.CLOUD_PROVIDER_VMWARE || cloudaccount.Provider == api.CLOUD_PROVIDER_PROXMOX {
 		cloudaccount.SetStatus(ctx, self.UserCred, api.CLOUD_PROVIDER_SYNC_NETWORK, "StartSyncOnPremiseNetworkTask")
@@ -75,9 +79,13 @@ func (self *CloudAccountSyncInfoTask) OnInit(ctx context.Context, obj db.IStanda
 		if err != nil {
 			if errors.Cause(err) == httperrors.ErrConflict {
 				log.Errorf("account %s(%s) alread in syncing", cloudaccount.Name, cloudaccount.Provider)
+				return nil, errors.Wrap(err, "SyncCallSyncAccountTask")
 			}
-			// 进入同步任务前已经mark sync, 这里需要清理下状态
-			cloudaccount.MarkEndSyncWithLock(ctx, self.UserCred, false)
+			// A canceled admission never owned preparation. Only admitted work
+			// may clean up synchronization state, after its worker has drained.
+			if !models.CloudaccountSyncNotAdmitted(err) {
+				cloudaccount.MarkEndSyncWithLock(ctx, self.UserCred, false)
+			}
 			return nil, errors.Wrap(err, "SyncCallSyncAccountTask")
 		}
 		return nil, nil
@@ -100,7 +108,6 @@ func (self *CloudAccountSyncInfoTask) GetSyncRange(ctx context.Context) models.S
 		syncRangeJson.Unmarshal(&syncRange)
 	} else {
 		syncRange.FullSync = true
-		syncRange.DeepSync = true
 	}
 	return syncRange
 }
@@ -109,21 +116,46 @@ func (self *CloudAccountSyncInfoTask) OnCloudaccountSyncReady(ctx context.Contex
 	cloudaccount := obj.(*models.SCloudaccount)
 
 	syncRange := self.GetSyncRange(ctx)
+	if err := cloudaccount.EnableCloudproviderRegions(syncRange.Region); err != nil {
+		log.Errorf("EnableCloudproviderRegions %s: %v", cloudaccount.Name, err)
+		if models.IndependentSyncAccount(cloudaccount.Id) {
+			self.OnCloudaccountSyncCompleteFailed(ctx, obj, jsonutils.NewString(err.Error()))
+			return
+		}
+	}
 
 	if !syncRange.NeedSyncInfo() {
 		self.OnCloudaccountSyncComplete(ctx, obj, nil)
 		return
 	}
 
-	cloudproviders := cloudaccount.GetEnabledCloudproviders()
+	if models.IndependentSyncAccount(cloudaccount.Id) {
+		self.prepareIndependentSync(ctx, cloudaccount, syncRange)
+		return
+	}
 
-	if len(cloudproviders) > 0 {
-		self.SetStage("OnCloudaccountSyncComplete", nil)
-		for i := range cloudproviders {
-			cloudproviders[i].StartSyncCloudProviderInfoTask(ctx, self.UserCred, &syncRange, self.GetId())
+	// Cheap-scan never-synced regions first; each provider submits compute-first
+	// sync as soon as its own scan finishes, without waiting for sibling accounts.
+	if err := cloudaccount.DiscoverCloudproviderRegions(ctx, self.UserCred, true, true); err != nil {
+		log.Errorf("DiscoverCloudproviderRegions %s: %v", cloudaccount.Name, err)
+	}
+	if err := cloudaccount.RefreshEnabledRegionsAfterDiscover(ctx, self.UserCred, syncRange.Region); err != nil {
+		log.Errorf("RefreshEnabledCloudproviderRegions after discover %s: %v", cloudaccount.Name, err)
+	}
+
+	// Account probe + cheap discover are done. Do not wait for provider-region resource sync.
+	self.OnCloudaccountSyncComplete(ctx, obj, nil)
+
+	providerRange := models.AccountFanoutSyncRange(syncRange)
+	cloudproviders := cloudaccount.GetEnabledCloudproviders()
+	for i := range cloudproviders {
+		if !cloudproviders[i].HasEnabledCloudproviderRegion() {
+			continue
 		}
-	} else {
-		self.OnCloudaccountSyncComplete(ctx, obj, nil)
+		err := cloudproviders[i].StartSyncCloudProviderInfoTask(ctx, self.UserCred, &providerRange, "")
+		if err != nil {
+			log.Errorf("StartSyncCloudProviderInfoTask %s: %v", cloudproviders[i].Name, err)
+		}
 	}
 }
 

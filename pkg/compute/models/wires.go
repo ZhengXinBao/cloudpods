@@ -1348,7 +1348,7 @@ func (manager *SWireManager) FetchWireById(wireId string) *SWire {
 	return wireObj.(*SWire)
 }
 
-func (manager *SWireManager) FetchWireByExternalId(managerId, extId string) (*SWire, error) {
+func (manager *SWireManager) FetchWireByExternalId(managerId, extId string, vpcExternalIDs ...string) (*SWire, error) {
 	wires, err := manager.FetchWires(func(q *sqlchemy.SQuery) *sqlchemy.SQuery {
 		q = q.Equals("manager_id", managerId).Equals("external_id", extId)
 		return q
@@ -1356,14 +1356,29 @@ func (manager *SWireManager) FetchWireByExternalId(managerId, extId string) (*SW
 	if err != nil {
 		return nil, errors.Wrap(err, "FetchWires")
 	}
-	switch len(wires) {
-	case 0:
-		return nil, errors.Wrap(sql.ErrNoRows, "not found")
-	case 1:
-		return &wires[0], nil
-	default:
-		return nil, errors.Wrapf(httperrors.ErrDuplicateId, "duplicate wires externalId %s", extId)
+	var vpcIDs []string
+	if len(vpcExternalIDs) > 0 {
+		vpcIDs = make([]string, 0)
+		vpcs := make([]SVpc, 0)
+		q := VpcManager.Query("id").Equals("manager_id", managerId).In("external_id", vpcExternalIDs)
+		if err := db.FetchModelObjects(VpcManager, q, &vpcs); err != nil {
+			return nil, errors.Wrap(err, "fetch wire VPC scope")
+		}
+		for i := range vpcs {
+			vpcIDs = append(vpcIDs, vpcs[i].Id)
+		}
 	}
+	return selectWireByExternalID(wires, extId, vpcIDs)
+}
+
+// FetchWireByCloudWire retains provider wire IDs while disambiguating providers
+// whose wire IDs omit part of the VPC identity (for example Azure resource groups).
+func (manager *SWireManager) FetchWireByCloudWire(managerId string, remote cloudprovider.ICloudWire) (*SWire, error) {
+	vpc := remote.GetIVpc()
+	if !gotypes.IsNil(vpc) && vpc.GetGlobalId() != "" {
+		return manager.FetchWireByExternalId(managerId, remote.GetGlobalId(), vpc.GetGlobalId())
+	}
+	return manager.FetchWireByExternalId(managerId, remote.GetGlobalId())
 }
 
 func (manager *SWireManager) GetOnPremiseWireOfIp(ipAddr string) (*SWire, error) {
