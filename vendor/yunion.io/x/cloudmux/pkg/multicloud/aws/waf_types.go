@@ -116,7 +116,7 @@ type sWafIPSetReferenceStatement struct {
 }
 
 type sWafXssMatchStatement struct {
-	FieldToMatch        *sWafFieldToMatch       `json:"FieldToMatch"`
+	FieldToMatch        *sWafFieldToMatch        `json:"FieldToMatch"`
 	TextTransformations []sWafTextTransformation `json:"TextTransformations"`
 }
 
@@ -168,7 +168,7 @@ type sWafRuleGroupReferenceStatement struct {
 }
 
 type sWafSqliMatchStatement struct {
-	FieldToMatch        *sWafFieldToMatch       `json:"FieldToMatch"`
+	FieldToMatch        *sWafFieldToMatch        `json:"FieldToMatch"`
 	TextTransformations []sWafTextTransformation `json:"TextTransformations"`
 }
 
