@@ -338,7 +338,8 @@ func (client *SVolcEngineClient) jsonRequest(cred sdk.Credentials, domain string
 		}
 	}
 
-	u, err := url.Parse(fmt.Sprintf("http://%s?%s", domain, query.Encode()))
+	// Plain HTTP sends signed requests in cleartext and is blocked on egress-restricted networks.
+	u, err := url.Parse(fmt.Sprintf("https://%s?%s", domain, query.Encode()))
 	if err != nil {
 		return nil, errors.Wrapf(err, "url.Parse")
 	}

@@ -123,6 +123,8 @@ github.com/VividCortex/ewma v1.1.1 h1:MnEK4VOv6n0RSY4vtRe3h11qjxL3+t0B8yOL8iMXdc
 github.com/VividCortex/ewma v1.1.1/go.mod h1:2Tkkvm3sRDVXaiyucHiACn4cqf7DpdyLvmxzcbUokwA=
 github.com/ZhengXinBao/cloudmux v0.3.10-0-alpha.1.0.20260926164117-a73b6a86ce11 h1:7bAdIU6i5B39UYwGXI9RSWn27I2OkaVzi0o7GcAOhec=
 github.com/ZhengXinBao/cloudmux v0.3.10-0-alpha.1.0.20260926164117-a73b6a86ce11/go.mod h1:FLNUcF+R7ep5AmH7cVHRw1xFfxEKahDzyDRWcV3naOc=
+github.com/ZhengXinBao/cloudmux v0.3.10-0-alpha.1.0.20260928024602-e8901d7776cc h1:PboaGu2oNCHO1xctg12JijzC5fsSgFxttzsT4Ocq3oE=
+github.com/ZhengXinBao/cloudmux v0.3.10-0-alpha.1.0.20260928024602-e8901d7776cc/go.mod h1:FLNUcF+R7ep5AmH7cVHRw1xFfxEKahDzyDRWcV3naOc=
 github.com/ZhengXinBao/pkg v1.10.4-0.20260926164117-c99136a84f7f h1:S5I0UpMJBPCzDB2KDccpEvqcr6E+vG7larlPcXkenv8=
 github.com/ZhengXinBao/pkg v1.10.4-0.20260926164117-c99136a84f7f/go.mod h1:0Bwxqd9MA3ACi119/l02FprY/o9gHahmYC2bsSbnVpM=
 github.com/a8m/mark v0.1.1-0.20170507133748-44f2db618845/go.mod h1:c8Mh99Cw82nrsAnPgxQSZHkswVOJF7/MqZb1ZdvriLM=

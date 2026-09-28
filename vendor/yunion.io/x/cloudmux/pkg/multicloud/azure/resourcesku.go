@@ -15,6 +15,8 @@
 package azure
 
 import (
+	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -117,9 +119,24 @@ type SResourceSkusResult struct {
 }
 
 func (self *SAzureClient) ListResourceSkus() ([]SResourceSku, error) {
+	return self.listResourceSkus(nil)
+}
+
+// The unfiltered catalog covers every region and exceeds 1GiB once decoded,
+// so per-region sync must ask Azure to filter server-side.
+func (self *SAzureClient) ListRegionResourceSkus(location string) ([]SResourceSku, error) {
+	return self.listResourceSkus(resourceSkuLocationParams(location))
+}
+
+func resourceSkuLocationParams(location string) url.Values {
+	params := url.Values{}
+	params.Set("$filter", fmt.Sprintf("location eq '%s'", strings.ReplaceAll(location, "'", "''")))
+	return params
+}
+
+func (self *SAzureClient) listResourceSkus(params url.Values) ([]SResourceSku, error) {
 	skus := []SResourceSku{}
-	resource := "Microsoft.Compute/skus"
-	return skus, self.list(resource, nil, &skus)
+	return skus, self.list("Microsoft.Compute/skus", params, &skus)
 }
 
 func resourceSkuCapability(sku SResourceSku, name string) string {
@@ -212,9 +229,9 @@ func newCloudSkuFromResourceSku(instanceType SResourceSku) *multicloud.SCloudSku
 }
 
 func (self *SRegion) GetISkus() ([]cloudprovider.ICloudSku, error) {
-	resourceSkus, err := self.client.ListResourceSkus()
+	resourceSkus, err := self.client.ListRegionResourceSkus(self.Name)
 	if err != nil {
-		return nil, errors.Wrap(err, "ListResourceSkus")
+		return nil, errors.Wrap(err, "ListRegionResourceSkus")
 	}
 	ret := make([]cloudprovider.ICloudSku, 0, len(resourceSkus))
 	seen := map[string]bool{}
