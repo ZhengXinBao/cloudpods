@@ -1229,7 +1229,16 @@ func syncHostVMs(ctx context.Context, userCred mcclient.TokenCredential, syncRes
 	provider.SyncError(result, notes, userCred)
 
 	for i := 0; i < len(syncVMPairs); i += 1 {
+		nicCount := 1
 		if !syncVMPairs[i].IsNew && !syncRange.DeepSync {
+			cnt, err := syncVMPairs[i].Local.NetworkCount()
+			if err != nil {
+				log.Errorf("NetworkCount for guest %s(%s) error: %v", syncVMPairs[i].Local.Name, syncVMPairs[i].Local.Id, err)
+			} else {
+				nicCount = cnt
+			}
+		}
+		if !needSyncVMPeripherals(syncVMPairs[i].IsNew, syncRange.DeepSync, nicCount) {
 			continue
 		}
 		func() {

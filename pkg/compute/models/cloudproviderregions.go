@@ -452,6 +452,11 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 		return err
 	}
 
+	// Only the status-owning (core) job records LastDeepSyncAt, so only it may
+	// be promoted; otherwise split groups would deep sync on every run.
+	if manageStatus && !syncRange.DeepSync && needPeriodicDeepSync(self.LastDeepSyncAt, time.Now()) {
+		syncRange.DeepSync = true
+	}
 	log.Debugf("need to do deep sync? ... %v, xor? ... %v", syncRange.DeepSync, syncRange.Xor)
 
 	if localRegion.isManaged() {

@@ -493,3 +493,19 @@ func (cprvd *SCloudprovider) HasEnabledCloudproviderRegion() bool {
 	}
 	return cnt > 0
 }
+
+// periodicDeepSyncInterval restores the upstream guarantee that every region
+// gets a deep sync (VM nics/disks/secgroups, SKUs) at least once a day.
+const periodicDeepSyncInterval = 24 * time.Hour
+
+func needPeriodicDeepSync(lastDeepSyncAt, now time.Time) bool {
+	return lastDeepSyncAt.IsZero() || now.Sub(lastDeepSyncAt) > periodicDeepSyncInterval
+}
+
+// needSyncVMPeripherals decides whether an already-known VM must have its
+// nics/disks/secgroups re-synced. VMs first seen while still creating (e.g.
+// EMR/TKE nodes) often have no nic yet; without this they stay IP-less until
+// the next deep sync.
+func needSyncVMPeripherals(isNew, deepSync bool, nicCount int) bool {
+	return isNew || deepSync || nicCount == 0
+}
