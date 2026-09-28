@@ -428,6 +428,6 @@ replace github.com/influxdata/promql/v2 => github.com/zexi/promql/v2 v2.12.1
 
 replace inet.af/netaddr => github.com/inetaf/netaddr v0.0.0-20211027220019-c74959edd3b6
 
-replace yunion.io/x/cloudmux => github.com/ZhengXinBao/cloudmux v0.3.10-0-alpha.1.0.20260928024602-e8901d7776cc
+replace yunion.io/x/cloudmux => github.com/ZhengXinBao/cloudmux v0.3.10-0-alpha.1.0.20260928070846-09ca58f56a87
 
 replace yunion.io/x/pkg => github.com/ZhengXinBao/pkg v1.10.4-0.20260926164117-c99136a84f7f
