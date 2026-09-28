@@ -57,7 +57,7 @@ type SPostgreSQL struct {
 
 	Region             string
 	Zone               string
-	ProjectId          string
+	ProjectId          int
 	VpcId              string
 	SubnetId           string
 	DBInstanceId       string
@@ -299,7 +299,7 @@ func (pg *SPostgreSQL) GetMasterInstanceId() string {
 }
 
 func (pg *SPostgreSQL) GetProjectId() string {
-	return pg.ProjectId
+	return fmt.Sprintf("%d", pg.ProjectId)
 }
 
 func (pg *SPostgreSQL) GetBillingType() string {
