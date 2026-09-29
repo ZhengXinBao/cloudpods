@@ -3,6 +3,7 @@ package models
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/sqlchemy"
@@ -120,6 +121,7 @@ func (provider *SCloudprovider) EnqueueIndependentRegions(ctx context.Context, c
 			break
 		}
 	}
+	hasRegionPlan := false
 	for _, plan := range plans {
 		if plan.ScopeType == "provider" {
 			if err := provider.enqueueProviderSync(ctx, cred, plan.Range, plan.ResourceGroup, runID); err != nil {
@@ -127,9 +129,37 @@ func (provider *SCloudprovider) EnqueueIndependentRegions(ctx context.Context, c
 			}
 			continue
 		}
+		hasRegionPlan = true
+	}
+	if !hasRegionPlan {
+		return nil
+	}
+	return enqueueRegionPlans(ctx, cred, regions, sr, runID, time.Now())
+}
+
+// enqueueRegionPlans plans each region with its own periodic deep sync
+// decision, then enqueues group by group so every region's core job is queued
+// before any of its dependent groups.
+func enqueueRegionPlans(ctx context.Context, cred mcclient.TokenCredential, regions []SCloudproviderregion, sr SSyncRange, runID string, now time.Time) error {
+	regionPlans := make([][]independentSyncPlan, len(regions))
+	maxPlans := 0
+	for i := range regions {
+		for _, plan := range independentSyncPlans(regionSyncRange(sr, regions[i].LastDeepSyncAt, now)) {
+			if plan.ScopeType == "region" {
+				regionPlans[i] = append(regionPlans[i], plan)
+			}
+		}
+		if len(regionPlans[i]) > maxPlans {
+			maxPlans = len(regionPlans[i])
+		}
+	}
+	for idx := 0; idx < maxPlans; idx++ {
 		for i := range regions {
-			region := &regions[i]
-			if err := region.enqueueResourceSync(ctx, cred, plan.Range, plan.ResourceGroup, runID); err != nil {
+			if idx >= len(regionPlans[i]) {
+				continue
+			}
+			plan := regionPlans[i][idx]
+			if err := regions[i].enqueueResourceSync(ctx, cred, plan.Range, plan.ResourceGroup, runID); err != nil {
 				return err
 			}
 		}

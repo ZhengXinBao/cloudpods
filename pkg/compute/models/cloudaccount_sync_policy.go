@@ -509,3 +509,16 @@ func needPeriodicDeepSync(lastDeepSyncAt, now time.Time) bool {
 func needSyncVMPeripherals(isNew, deepSync bool, nicCount int) bool {
 	return isNew || deepSync || nicCount == 0
 }
+
+// regionSyncRange decides the periodic deep sync per region at plan time, so
+// every resource group of the run (services, storage, extended) sees the same
+// DeepSync flag. Deciding it inside the core job only would leave RDS/Redis
+// SKUs and deep-only groups stale forever. Targeted resource syncs are kept
+// as requested.
+func regionSyncRange(in SSyncRange, lastDeepSyncAt, now time.Time) SSyncRange {
+	out := in
+	if len(in.Resources) == 0 && !in.DeepSync && needPeriodicDeepSync(lastDeepSyncAt, now) {
+		out.DeepSync = true
+	}
+	return out
+}

@@ -56,3 +56,37 @@ func TestNeedSyncVMPeripherals(t *testing.T) {
 		}
 	}
 }
+
+func TestRegionSyncRangePromotesStaleRegion(t *testing.T) {
+	now := time.Now()
+	stale := regionSyncRange(SSyncRange{}, now.Add(-25*time.Hour), now)
+	if !stale.DeepSync {
+		t.Fatalf("stale region should be promoted to deep sync")
+	}
+	fresh := regionSyncRange(SSyncRange{}, now.Add(-time.Hour), now)
+	if fresh.DeepSync {
+		t.Fatalf("recently deep-synced region should not be promoted")
+	}
+	targeted := SSyncRange{}
+	targeted.Resources = []string{"rds"}
+	if regionSyncRange(targeted, time.Time{}, now).DeepSync {
+		t.Fatalf("targeted resource sync should not be promoted")
+	}
+}
+
+func TestStaleRegionPlansCarryDeepSyncToAllGroups(t *testing.T) {
+	now := time.Now()
+	plans := independentSyncPlans(regionSyncRange(SSyncRange{}, time.Time{}, now))
+	groups := map[string]bool{}
+	for _, plan := range plans {
+		groups[plan.ResourceGroup] = true
+		if !plan.Range.DeepSync {
+			t.Fatalf("group %s lost deep sync, RDS/Redis SKUs would never refresh", plan.ResourceGroup)
+		}
+	}
+	for _, g := range []string{"core", "services", "storage", "extended"} {
+		if !groups[g] {
+			t.Fatalf("stale region plan missing group %s: %+v", g, plans)
+		}
+	}
+}
