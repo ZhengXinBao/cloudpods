@@ -302,15 +302,31 @@ func (acnt *SCloudaccount) RefreshEnabledRegionsAfterDiscover(ctx context.Contex
 func (acnt *SCloudaccount) RefreshEnabledCloudproviderRegions(ctx context.Context, userCred mcclient.TokenCredential, keepRegionExtIds []string, extraRegionIds []string) error {
 	lockman.LockObject(ctx, acnt)
 	defer lockman.ReleaseObject(ctx, acnt)
+	return acnt.refreshEnabledCloudproviderRegions(ctx, userCred, keepRegionExtIds, extraRegionIds, "")
+}
+
+// Caller holds the account lock. A nonempty providerID restricts both active-job
+// protection and refresh; a sibling already enqueued must not suppress this one.
+func (acnt *SCloudaccount) refreshEnabledCloudproviderRegions(ctx context.Context, userCred mcclient.TokenCredential, keepRegionExtIds, extraRegionIds []string, providerID string) error {
 	// Queued regions are not yet marked syncing. Background account probes
 	// must preserve their requested scope until the durable run has drained.
 	if IndependentSyncAccount(acnt.Id) {
-		counts, err := CloudSyncQueue().Stats(ctx, acnt.Id)
-		if err != nil {
-			return errors.Wrap(err, "check active independent sync before refreshing regions")
-		}
-		if preserveIndependentSyncRegions(counts) {
-			return nil
+		if providerID != "" {
+			active, err := CloudSyncQueue().ActiveJobsForProvider(ctx, providerID)
+			if err != nil {
+				return errors.Wrap(err, "check active provider sync before refreshing regions")
+			}
+			if active > 0 {
+				return nil
+			}
+		} else {
+			counts, err := CloudSyncQueue().Stats(ctx, acnt.Id)
+			if err != nil {
+				return errors.Wrap(err, "check active independent sync before refreshing regions")
+			}
+			if preserveIndependentSyncRegions(counts) {
+				return nil
+			}
 		}
 	}
 	if userCred != nil {
@@ -318,7 +334,11 @@ func (acnt *SCloudaccount) RefreshEnabledCloudproviderRegions(ctx context.Contex
 	}
 
 	providers := []SCloudprovider{}
-	if err := db.FetchModelObjects(CloudproviderManager, CloudproviderManager.Query().Equals("cloudaccount_id", acnt.Id), &providers); err != nil {
+	q := CloudproviderManager.Query().Equals("cloudaccount_id", acnt.Id)
+	if providerID != "" {
+		q = q.Equals("id", providerID)
+	}
+	if err := db.FetchModelObjects(CloudproviderManager, q, &providers); err != nil {
 		return errors.Wrapf(err, "refresh enabled regions: fetch providers for account %s", acnt.Id)
 	}
 	onPremise := acnt.IsOnPremise

@@ -494,6 +494,17 @@ func (q *Queue) Stats(ctx context.Context, accountID string) (map[string]int, er
 	return stats, rows.Err()
 }
 
+// ActiveJobsForProvider includes region jobs that are queued but have not yet
+// marked their region syncing. Use this when preserving a provider's scope.
+func (q *Queue) ActiveJobsForProvider(ctx context.Context, providerID string) (int, error) {
+	if strings.TrimSpace(providerID) == "" || len(providerID) > 128 {
+		return 0, errors.New("provider ID must be 1..128 bytes")
+	}
+	var count int
+	err := q.DB.QueryRowContext(ctx, "SELECT COUNT(*) FROM sync_queue_jobs WHERE provider_id=? AND state IN ('waiting','running','retry')", providerID).Scan(&count)
+	return count, err
+}
+
 // ActiveProviderJobs counts non-terminal provider-scoped jobs for one
 // provider. Region jobs are reflected by their provider-region status.
 func (q *Queue) ActiveProviderJobs(ctx context.Context, providerID string) (int, error) {

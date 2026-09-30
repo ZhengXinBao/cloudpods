@@ -34,39 +34,26 @@ func init() {
 	taskman.RegisterRestartPreservedStage("CloudProviderSyncInfoTask", independentSyncWaitStage)
 }
 
-func (self *CloudAccountSyncInfoTask) prepareIndependentSync(ctx context.Context, account *models.SCloudaccount, sr models.SSyncRange) {
+func (self *CloudAccountSyncInfoTask) prepareIndependentSync(ctx context.Context, account *models.SCloudaccount, sr models.SSyncRange, preparationData jsonutils.JSONObject) {
 	if err := self.SetStage("OnIndependentSyncPrepared", nil); err != nil {
 		self.SetStageFailed(ctx, jsonutils.NewString(err.Error()))
 		return
 	}
 	taskman.LocalTaskRun(self, func() (jsonutils.JSONObject, error) {
-		if err := sr.Normalize(ctx); err != nil {
-			return nil, err
-		}
-		var planningErrors []error
-		// Discovery must not submit anonymous jobs that escape this run's progress.
-		discoverCtx, discoverFailures := models.WithCloudSyncErrors(ctx)
-		if err := account.DiscoverCloudproviderRegions(discoverCtx, self.UserCred, false, true); err != nil {
-			planningErrors = append(planningErrors, err)
-		}
-		if err := discoverFailures.Error(); err != nil {
-			planningErrors = append(planningErrors, err)
-		}
-		if err := account.RefreshEnabledRegionsAfterDiscover(ctx, self.UserCred, sr.Region); err != nil {
-			return nil, err
-		}
-		sr = models.AccountFanoutSyncRange(sr)
-		var providers []models.SCloudprovider
-		if err := db.FetchModelObjects(models.CloudproviderManager, models.CloudproviderManager.Query().Equals("cloudaccount_id", account.Id).IsTrue("enabled"), &providers); err != nil {
-			return nil, err
-		}
-		for i := range providers {
-			if err := providers[i].EnqueueIndependentRegions(ctx, self.UserCred, sr, self.GetTaskId()); err != nil {
-				planningErrors = append(planningErrors, err)
-			}
-		}
-		return nil, errors.Join(planningErrors...)
+		return nil, independentSyncPlanningError(preparationData, account.EnqueueIndependentAccountRegions(ctx, self.UserCred, sr, self.GetTaskId()))
 	})
+}
+
+// Preparation failures must survive successful discovery without preventing
+// healthy providers from running or sealing while their queued jobs remain.
+func independentSyncPlanningError(data jsonutils.JSONObject, planningErr error) error {
+	var preparationErr error
+	if data != nil {
+		if message, _ := data.GetString("region_prepare_error"); message != "" {
+			preparationErr = fmt.Errorf("region preparation failed: %s", message)
+		}
+	}
+	return errors.Join(preparationErr, planningErr)
 }
 
 func (self *CloudProviderSyncInfoTask) prepareIndependentSync(ctx context.Context, provider *models.SCloudprovider, sr models.SSyncRange) {

@@ -170,16 +170,17 @@ type ComputeOptions struct {
 	SyncWorkerInspectAccount     string   `help:"Print queue progress for this cloud account and exit"`
 	SyncQueueRetentionDays       int      `help:"Days to keep finished independent sync jobs; <= 0 disables purge" default:"7"`
 
-	CloudSyncWorkerCount               int `help:"how many current synchronization threads" default:"16"`
-	CloudProviderSyncWorkerCount       int `help:"how many current providers synchronize their regions, practically no limit" default:"10"`
-	CloudAccountProbeWorkerCount       int `help:"how many workers for auto cloud account status probe" default:"10"`
-	CloudAccountSyncProbeWorkerCount   int `help:"how many workers for cloud account sync probe before resource sync" default:"10"`
-	CloudAutoSyncIntervalSeconds       int `help:"frequency to check auto sync tasks" default:"300"`
-	CloudRegionDiscoverIntervalSeconds int `help:"min seconds before re-probing a disabled region for new cloud resources" default:"3600"`
-	CloudRegionDiscoverBatchSize       int `help:"max already-probed empty regions to re-check per account status check" default:"30"`
-	CloudRegionDiscoverConcurrency     int `help:"max concurrent cheap cloud-region resource probes" default:"10"`
-	DefaultSyncIntervalSeconds         int `help:"minimal synchronization interval, default 15 minutes" default:"900"`
-	MaxCloudAccountErrorCount          int `help:"maximal consecutive error count allow for a cloud account" default:"5"`
+	CloudSyncWorkerCount                 int `help:"how many current synchronization threads" default:"16"`
+	CloudProviderSyncWorkerCount         int `help:"how many current providers synchronize their regions, practically no limit" default:"10"`
+	CloudAccountProbeWorkerCount         int `help:"how many workers for auto cloud account status probe" default:"10"`
+	CloudAccountSyncProbeWorkerCount     int `help:"how many workers for cloud account sync probe before resource sync" default:"10"`
+	CloudAutoSyncIntervalSeconds         int `help:"frequency to check auto sync tasks" default:"300"`
+	CloudRegionDiscoverIntervalSeconds   int `help:"min seconds before re-probing a disabled region for new cloud resources" default:"3600"`
+	CloudRegionDiscoverBatchSize         int `help:"max already-probed empty regions to re-check per account status check" default:"30"`
+	CloudAccountRegionPrepareConcurrency int `help:"max concurrent subscription region preparations per account" default:"4"`
+	CloudRegionDiscoverConcurrency       int `help:"max concurrent cheap cloud-region resource probes" default:"10"`
+	DefaultSyncIntervalSeconds           int `help:"minimal synchronization interval, default 15 minutes" default:"900"`
+	MaxCloudAccountErrorCount            int `help:"maximal consecutive error count allow for a cloud account" default:"5"`
 
 	EnableSyncName bool `help:"enable name sync" default:"true"`
 

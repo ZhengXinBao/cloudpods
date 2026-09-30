@@ -1,6 +1,8 @@
 package cloudaccount
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"yunion.io/x/jsonutils"
 )
@@ -40,5 +42,22 @@ func TestIndependentRunCompletion(t *testing.T) {
 				t.Fatalf("failed=%v want %v", failed, tc.failed)
 			}
 		})
+	}
+}
+
+func TestAccountPreparationFailureSurvivesPlanning(t *testing.T) {
+	data := jsonutils.NewDict()
+	data.Set("region_prepare_error", jsonutils.NewString("subscription preparation failed"))
+	for _, planningErr := range []error{nil, errors.New("discovery failed")} {
+		err := independentSyncPlanningError(data, planningErr)
+		if err == nil || !strings.Contains(err.Error(), "subscription preparation failed") {
+			t.Fatalf("lost preparation failure: %v", err)
+		}
+		if planningErr != nil && !errors.Is(err, planningErr) {
+			t.Fatalf("lost planning failure: %v", err)
+		}
+	}
+	if err := independentSyncPlanningError(nil, nil); err != nil {
+		t.Fatal(err)
 	}
 }

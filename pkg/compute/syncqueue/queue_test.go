@@ -182,6 +182,12 @@ func TestMySQLLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if n, err := q.ActiveJobsForProvider(ctx, "dependency-provider"); err != nil || n != 2 {
+		t.Fatalf("must include both queued region and provider jobs: n=%d err=%v", n, err)
+	}
+	if n, err := q.ActiveJobsForProvider(ctx, "missing-provider"); err != nil || n != 0 {
+		t.Fatalf("must isolate providers: n=%d err=%v", n, err)
+	}
 	providerJob, err := q.Claim(ctx, "dependency-worker", time.Minute)
 	if err != nil || providerJob == nil || providerJob.ID != providerID {
 		t.Fatalf("provider dependency must claim first: job=%v err=%v", providerJob, err)
@@ -195,6 +201,9 @@ func TestMySQLLifecycle(t *testing.T) {
 	}
 	if err := q.Complete(ctx, providerJob, nil, 3, 0); err != nil {
 		t.Fatal(err)
+	}
+	if n, err := q.ActiveJobsForProvider(ctx, "dependency-provider"); err != nil || n != 1 {
+		t.Fatalf("must preserve waiting region after provider job finishes: n=%d err=%v", n, err)
 	}
 	regionJob, err := q.Claim(ctx, "dependency-region-worker", time.Minute)
 	if err != nil || regionJob == nil || regionJob.ID != regionID {
@@ -397,5 +406,11 @@ func TestMySQLReplicaLimits(t *testing.T) {
 	third, err = q.Claim(ctx, "third", time.Minute)
 	if err != nil || third == nil {
 		t.Fatal("capacity not released", err)
+	}
+}
+
+func TestActiveJobsForProviderRejectsEmptyID(t *testing.T) {
+	if _, err := New(nil).ActiveJobsForProvider(context.Background(), "  "); err == nil {
+		t.Fatal("empty provider would remove isolation")
 	}
 }

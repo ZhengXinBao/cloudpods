@@ -2,6 +2,7 @@ package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -9,6 +10,7 @@ import (
 	"yunion.io/x/sqlchemy"
 
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
+	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/compute/syncqueue"
 	"yunion.io/x/onecloud/pkg/compute/syncworker"
@@ -90,6 +92,43 @@ func (provider *SCloudprovider) enqueueProviderSync(ctx context.Context, cred mc
 		return fmt.Errorf("enqueue provider sync: %w", err)
 	}
 	return nil
+}
+
+// EnqueueIndependentAccountRegions streams each discovered provider into the
+// same durable run. The caller must seal only after this producer returns.
+func (account *SCloudaccount) EnqueueIndependentAccountRegions(ctx context.Context, cred mcclient.TokenCredential, sr SSyncRange, runID string) error {
+	if err := sr.Normalize(ctx); err != nil {
+		return err
+	}
+	return planIndependentSyncProviders(ctx, sr, runID,
+		func(ctx context.Context, ready func(context.Context, *SCloudprovider) error) error {
+			// Never submit anonymous first-inventory jobs outside this run.
+			return account.discoverCloudproviderRegionsReady(ctx, cred, false, true, db.FetchModelObjects, ready)
+		}, func(ctx context.Context, provider *SCloudprovider, sr SSyncRange, runID string) error {
+			// Make refresh+enqueue atomic with respect to background account
+			// refreshes. No cloud SDK calls occur under this account lock.
+			lockman.LockObject(ctx, account)
+			defer lockman.ReleaseObject(ctx, account)
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := account.refreshEnabledCloudproviderRegions(ctx, cred, account.getSubAccountRegionExternalIds(), sr.Region, provider.Id); err != nil {
+				return err
+			}
+			return provider.EnqueueIndependentRegions(ctx, cred, sr, runID)
+		})
+}
+
+func planIndependentSyncProviders(ctx context.Context, sr SSyncRange, runID string, discover func(context.Context, func(context.Context, *SCloudprovider) error) error, ready func(context.Context, *SCloudprovider, SSyncRange, string) error) error {
+	discoverCtx, failures := WithCloudSyncErrors(ctx)
+	sr = AccountFanoutSyncRange(sr)
+	err := discover(discoverCtx, func(providerCtx context.Context, provider *SCloudprovider) error {
+		if err := providerCtx.Err(); err != nil {
+			return err
+		}
+		return ready(providerCtx, provider, sr, runID)
+	})
+	return errors.Join(err, failures.Error())
 }
 
 // EnqueueIndependentRegions plans all eligible regions synchronously. The caller

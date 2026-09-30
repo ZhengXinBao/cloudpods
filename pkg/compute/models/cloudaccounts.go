@@ -2487,13 +2487,25 @@ func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mc
 	providers := account.importAllSubaccounts(ctx, userCred, subaccounts)
 	keepRegionExtIds := account.getSubAccountRegionExternalIds()
 	if prepareRegions {
-		for i := range providers {
-			if providers[i].GetEnabled() {
-				_, err := providers[i].prepareCloudproviderRegions(ctx, userCred)
-				if err != nil {
-					providers[i].SetStatus(ctx, userCred, api.CLOUD_PROVIDER_DISCONNECTED, errors.Wrapf(err, "prepareCloudproviderRegions").Error())
-				}
+		concurrency := options.Options.CloudAccountRegionPrepareConcurrency
+		if concurrency <= 0 {
+			concurrency = 4
+		}
+		err := prepareAccountProviderRegions(ctx, providers, concurrency, func(ctx context.Context, provider *SCloudprovider) error {
+			_, err := provider.prepareCloudproviderRegions(ctx, userCred)
+			if err != nil {
+				provider.SetStatus(ctx, userCred, api.CLOUD_PROVIDER_DISCONNECTED, errors.Wrapf(err, "prepareCloudproviderRegions").Error())
+				return errors.Wrapf(err, "prepare provider %s", provider.Id)
 			}
+			return nil
+		})
+		if err != nil {
+			// Healthy subscriptions must still reach discovery and enqueue. The
+			// independent task carries this failure through its final run result.
+			cloudSyncError(ctx, "prepare account regions: %v", err)
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 	}
 	err = account.setSubAccountStatus()

@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"yunion.io/x/cloudmux/pkg/cloudprovider"
@@ -302,7 +301,13 @@ func (acnt *SCloudaccount) DiscoverCloudproviderRegions(ctx context.Context, use
 }
 
 func (acnt *SCloudaccount) discoverCloudproviderRegions(ctx context.Context, userCred mcclient.TokenCredential, submitSync bool, exhaustive bool, fetch func(db.IModelManager, *sqlchemy.SQuery, interface{}) error) error {
-	if acnt.IsOnPremise {
+	return acnt.discoverCloudproviderRegionsReady(ctx, userCred, submitSync, exhaustive, fetch, nil)
+}
+
+// onReady runs once per enabled provider, after its admitted SDK calls drain,
+// including providers with no discovery candidates. It must not seal the run.
+func (acnt *SCloudaccount) discoverCloudproviderRegionsReady(ctx context.Context, userCred mcclient.TokenCredential, submitSync bool, exhaustive bool, fetch func(db.IModelManager, *sqlchemy.SQuery, interface{}) error, onReady func(context.Context, *SCloudprovider) error) error {
+	if acnt.IsOnPremise && onReady == nil {
 		return nil
 	}
 	interval, batch := cloudRegionDiscoverLimits(options.Options.CloudRegionDiscoverIntervalSeconds, options.Options.CloudRegionDiscoverBatchSize, exhaustive)
@@ -319,6 +324,9 @@ func (acnt *SCloudaccount) discoverCloudproviderRegions(ctx context.Context, use
 	}
 	for i := range providers {
 		if !providers[i].GetEnabled() {
+			continue
+		}
+		if acnt.IsOnPremise {
 			continue
 		}
 		cprs := []SCloudproviderregion{}
@@ -338,24 +346,12 @@ func (acnt *SCloudaccount) discoverCloudproviderRegions(ctx context.Context, use
 	}
 
 	idxs := selectDiscoverCandidateIndexes(inputs, time.Now(), interval, batch)
-	if len(idxs) == 0 {
-		return nil
-	}
 
 	conc := options.Options.CloudRegionDiscoverConcurrency
 	if conc <= 0 {
 		conc = 10
 	}
 
-	remaining := map[string]*int32{}
-	for _, idx := range idxs {
-		pid := items[idx].provider.Id
-		if remaining[pid] == nil {
-			v := int32(0)
-			remaining[pid] = &v
-		}
-		*remaining[pid]++
-	}
 	var hitMu sync.Mutex
 	hitsByProvider := map[string][]*SCloudproviderregion{}
 	recordHit := func(providerId string, cpr *SCloudproviderregion) {
@@ -363,7 +359,7 @@ func (acnt *SCloudaccount) discoverCloudproviderRegions(ctx context.Context, use
 		hitsByProvider[providerId] = append(hitsByProvider[providerId], cpr)
 		hitMu.Unlock()
 	}
-	flushHits := func(providerId string) {
+	flushHits := func(ctx context.Context, providerId string) {
 		if !submitSync {
 			return
 		}
@@ -379,72 +375,49 @@ func (acnt *SCloudaccount) discoverCloudproviderRegions(ctx context.Context, use
 		}
 	}
 
-	var driverMu sync.Mutex
 	drivers := providerDriverCache{drivers: make(map[string]cloudprovider.ICloudProvider)}
-	providerMus := map[string]*sync.Mutex{}
-	getDriver := func(provider *SCloudprovider) (cloudprovider.ICloudProvider, error) {
+	getDriver := func(ctx context.Context, provider *SCloudprovider) (cloudprovider.ICloudProvider, error) {
 		return drivers.get(provider.Id, func() (cloudprovider.ICloudProvider, error) {
 			return provider.GetProvider(ctx)
 		})
 	}
-	lockProvider := func(id string) func() {
-		driverMu.Lock()
-		mu, ok := providerMus[id]
-		if !ok {
-			mu = &sync.Mutex{}
-			providerMus[id] = mu
-		}
-		driverMu.Unlock()
-		mu.Lock()
-		return mu.Unlock
-	}
 
 	now := timeutils.UtcNow()
-	sem := make(chan struct{}, conc)
-	var wg sync.WaitGroup
-	for _, idx := range idxs {
-		if err := ctx.Err(); err != nil {
-			wg.Wait()
-			return err
+	jobs := make([]cloudProviderWork, 0, len(idxs)+len(providers))
+	providerByID := make(map[string]*SCloudprovider, len(providers))
+	for i := range providers {
+		if providers[i].GetEnabled() {
+			providerByID[providers[i].Id] = &providers[i]
+			// Empty providers still need refresh and planning.
+			jobs = append(jobs, cloudProviderWork{providerID: providers[i].Id})
 		}
+	}
+	for _, idx := range idxs {
 		item := items[idx]
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(provider *SCloudprovider, cpr *SCloudproviderregion) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			defer func() {
-				if n := remaining[provider.Id]; n != nil && atomic.AddInt32(n, -1) == 0 {
-					flushHits(provider.Id)
-				}
-			}()
-			if err := ctx.Err(); err != nil {
-				return
-			}
+		jobs = append(jobs, cloudProviderWork{providerID: item.provider.Id, run: func(ctx context.Context) error {
+			provider, cpr := item.provider, item.cpr
 			region, err := cpr.GetRegion()
 			if err != nil {
 				cloudSyncError(ctx, "discover GetRegion %s/%s: %v", provider.Id, cpr.CloudregionId, err)
-				return
+				return nil
 			}
-			unlock := lockProvider(provider.Id)
-			defer unlock()
-			driver, err := getDriver(provider)
+			driver, err := getDriver(ctx, provider)
 			if err != nil {
 				cloudSyncError(ctx, "discover GetProvider %s: %v", provider.Id, err)
-				return
+				return nil
 			}
 			iregion, err := driver.GetIRegionById(region.ExternalId)
 			if err != nil {
 				cloudSyncError(ctx, "discover GetIRegionById %s/%s: %v", provider.Id, region.ExternalId, err)
-				return
+				return nil
 			}
 			hasResources, err, probeDone := cloudRegionHasResourcesWithTimeoutDone(iregion, cloudRegionDiscoverTimeout)
-			// Keep the per-provider mutex until a timed-out probe exits. The
+			// Keep the provider scheduling slot until a timed-out probe exits. The
 			// provider driver may still be using a connection after timeout.
 			defer func() { <-probeDone }()
 			if err != nil {
 				cloudSyncError(ctx, "discover cloud resources %s/%s: %v", provider.Name, region.Name, err)
-				return
+				return nil
 			}
 
 			_, err = db.Update(cpr, func() error {
@@ -457,15 +430,21 @@ func (acnt *SCloudaccount) discoverCloudproviderRegions(ctx context.Context, use
 			})
 			if err != nil {
 				cloudSyncError(ctx, "update discovered cloudproviderregion %s/%s: %v", provider.Id, region.Id, err)
-				return
+				return nil
 			}
 			if !hasResources {
-				return
+				return nil
 			}
 			log.Infof("enable cloudproviderregion %s(%s) / %s(%s) after discovering cloud resources", provider.Name, provider.Id, region.Name, region.Id)
 			recordHit(provider.Id, cpr)
-		}(item.provider, item.cpr)
+			return nil
+		}})
 	}
-	wg.Wait()
-	return nil
+	return runCloudProviderWork(ctx, jobs, conc, func(ctx context.Context, id string) error {
+		flushHits(ctx, id)
+		if onReady != nil {
+			return onReady(ctx, providerByID[id])
+		}
+		return nil
+	})
 }

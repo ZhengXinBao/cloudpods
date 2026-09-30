@@ -373,16 +373,7 @@ func TestExhaustiveDiscoveryCoversAllCandidates(t *testing.T) {
 }
 
 func TestDiscoveryReturnsDatabaseEnumerationFailure(t *testing.T) {
-	// Queries are constructed normally; the injected fetch supplies database failures.
-	if sqlchemy.GetDefaultDB() == nil {
-		sqlchemy.SetDefaultDB(nil)
-	}
-	original := CloudproviderRegionManager
-	if original == nil {
-		CloudproviderRegionManager = &SCloudproviderregionManager{SJointResourceBaseManager: db.NewJointResourceBaseManager(SCloudproviderregion{}, "cloud_provider_regions_tbl", "cloudproviderregion", "cloudproviderregions", CloudproviderManager, CloudregionManager)}
-		CloudproviderRegionManager.SetVirtualObject(CloudproviderRegionManager)
-		t.Cleanup(func() { CloudproviderRegionManager = original })
-	}
+	initDiscoveryTestModels(t)
 	for _, failAt := range []int{1, 2} {
 		calls := 0
 		failure := errors.New("database connection lost")
@@ -407,5 +398,46 @@ func TestDiscoveryReturnsDatabaseEnumerationFailure(t *testing.T) {
 		if calls != failAt {
 			t.Errorf("queries=%d, want stop at failing query %d", calls, failAt)
 		}
+	}
+}
+
+func TestDiscoveryReadyIncludesEmptyProvidersAndOnPremise(t *testing.T) {
+	initDiscoveryTestModels(t)
+	for _, onPremise := range []bool{false, true} {
+		account := &SCloudaccount{IsOnPremise: onPremise}
+		var ready int
+		failure := errors.New("enqueue failed")
+		err := account.discoverCloudproviderRegionsReady(context.Background(), nil, false, true,
+			func(manager db.IModelManager, query *sqlchemy.SQuery, targets interface{}) error {
+				if rows, ok := targets.(*[]SCloudprovider); ok {
+					p := SCloudprovider{}
+					p.Id, p.Enabled = "empty", tristate.True
+					*rows = []SCloudprovider{p, {}}
+				}
+				return nil
+			}, func(ctx context.Context, p *SCloudprovider) error {
+				if p.Id != "empty" {
+					t.Errorf("unexpected provider %s", p.Id)
+				}
+				ready++
+				return failure
+			})
+		if !errors.Is(err, failure) || ready != 1 {
+			t.Fatalf("onPremise=%v err=%v ready=%d", onPremise, err, ready)
+		}
+	}
+}
+
+func initDiscoveryTestModels(t *testing.T) {
+	t.Helper()
+	// Queries are constructed normally; the injected fetch supplies database failures.
+	if sqlchemy.GetDefaultDB() == nil {
+		sqlchemy.SetDefaultDB(nil)
+	}
+	original := CloudproviderRegionManager
+	if original == nil {
+		CloudproviderRegionManager = &SCloudproviderregionManager{SJointResourceBaseManager: db.NewJointResourceBaseManager(SCloudproviderregion{}, "cloud_provider_regions_tbl", "cloudproviderregion", "cloudproviderregions", CloudproviderManager, CloudregionManager)}
+		CloudproviderRegionManager.SetVirtualObject(CloudproviderRegionManager)
+		t.Cleanup(func() { CloudproviderRegionManager = original })
 	}
 }

@@ -75,7 +75,8 @@ func (self *CloudAccountSyncInfoTask) OnInit(ctx context.Context, obj db.IStanda
 
 	taskman.LocalTaskRun(self, func() (jsonutils.JSONObject, error) {
 		// do sync
-		err := cloudaccount.SyncCallSyncAccountTask(ctx, self.UserCred)
+		prepareCtx, preparationFailures := models.WithCloudSyncErrors(ctx)
+		err := cloudaccount.SyncCallSyncAccountTask(prepareCtx, self.UserCred)
 		if err != nil {
 			if errors.Cause(err) == httperrors.ErrConflict {
 				log.Errorf("account %s(%s) alread in syncing", cloudaccount.Name, cloudaccount.Provider)
@@ -87,6 +88,11 @@ func (self *CloudAccountSyncInfoTask) OnInit(ctx context.Context, obj db.IStanda
 				cloudaccount.MarkEndSyncWithLock(ctx, self.UserCred, false)
 			}
 			return nil, errors.Wrap(err, "SyncCallSyncAccountTask")
+		}
+		if err := preparationFailures.Error(); err != nil {
+			data := jsonutils.NewDict()
+			data.Set("region_prepare_error", jsonutils.NewString(err.Error()))
+			return data, nil
 		}
 		return nil, nil
 	})
@@ -125,12 +131,18 @@ func (self *CloudAccountSyncInfoTask) OnCloudaccountSyncReady(ctx context.Contex
 	}
 
 	if !syncRange.NeedSyncInfo() {
+		if models.IndependentSyncAccount(cloudaccount.Id) {
+			if err := independentSyncPlanningError(body, nil); err != nil {
+				self.OnCloudaccountSyncCompleteFailed(ctx, obj, jsonutils.NewString(err.Error()))
+				return
+			}
+		}
 		self.OnCloudaccountSyncComplete(ctx, obj, nil)
 		return
 	}
 
 	if models.IndependentSyncAccount(cloudaccount.Id) {
-		self.prepareIndependentSync(ctx, cloudaccount, syncRange)
+		self.prepareIndependentSync(ctx, cloudaccount, syncRange, body)
 		return
 	}
 
