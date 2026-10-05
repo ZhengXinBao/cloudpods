@@ -52,6 +52,7 @@ type Job struct {
 	LeaseUntil  sql.NullTime `json:"lease_until"`
 	LastError   string       `json:"last_error"`
 	ErrorClass  ErrorClass   `json:"error_class"`
+	ClaimTiming *ClaimTiming `json:"-"`
 }
 
 // Limits count live running leases across all replicas. Configure every worker
@@ -371,6 +372,7 @@ func (q *Queue) claimResource(ctx context.Context, key, worker string, lease tim
 	if accountRunning >= accountLimit || providerRunning >= providerLimit {
 		return nil, nil
 	}
+	timing := claimTiming(j)
 	result, err := tx.ExecContext(ctx, "UPDATE sync_queue_jobs SET state='running',worker_id=?,version=version+1,attempts=attempts+1,lease_until=TIMESTAMPADD(MICROSECOND,?,UTC_TIMESTAMP(6)),updated_at=UTC_TIMESTAMP(6) WHERE id=? AND version=? AND "+eligible, worker, lease.Microseconds(), j.ID, j.Version)
 	if err != nil {
 		return nil, err
@@ -385,6 +387,7 @@ func (q *Queue) claimResource(ctx context.Context, key, worker string, lease tim
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
+	j.ClaimTiming = timing
 	return j, nil
 }
 func owned(result sql.Result) error {

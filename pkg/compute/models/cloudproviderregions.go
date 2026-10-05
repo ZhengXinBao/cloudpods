@@ -421,6 +421,7 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 	manageStatus := ctx.Value(skipCloudSyncStatusKey{}) != true
 
 	syncResults := SSyncResultSet{}
+	defer traceSyncResultCosts(ctx, syncResults)
 
 	localRegion, err := self.GetRegion()
 	if err != nil {

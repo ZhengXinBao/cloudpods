@@ -18,6 +18,10 @@ All paths below are relative to the isolated worktree
 
 - Create `pkg/compute/synctrace/trace.go` and `trace_test.go`: safe event contract,
   context-local sinks/identity, start/end timing, ages and resource durations.
+- Modify `pkg/compute/syncqueue/queue.go`, add `claim_timing.go`/`claim_timing_test.go`:
+  snapshot the prior state/eligibility timestamp before the existing claim update.
+  Keep that snapshot in memory, excluded from JSON. Test waiting, retry backoff,
+  lease recovery and actual MySQL claim attachment.
 - Modify `pkg/compute/syncworker/runner.go`, add `trace_test.go`: claim,
   attempt and completion timing without changing heartbeat/drain logic.
 - Modify `pkg/compute/service/sync_worker.go`: lock, lease check and execution.
@@ -31,8 +35,8 @@ All paths below are relative to the isolated worktree
 
 ## Tasks
 
-- [ ] Baseline: `go test ./pkg/compute/syncqueue ./pkg/compute/syncworker ./pkg/compute/models ./pkg/compute/tasks/cloudaccount ./pkg/compute/service`.
-- [ ] TDD safe tracing helper:
+- [x] Baseline: `go test ./pkg/compute/syncqueue ./pkg/compute/syncworker ./pkg/compute/models ./pkg/compute/tasks/cloudaccount ./pkg/compute/service`.
+- [x] TDD safe tracing helper:
   ```go
   ctx := synctrace.WithIdentity(context.Background(), synctrace.Identity{RunID: "run", AccountID: "account"})
   ctx = synctrace.WithSink(ctx, func(event synctrace.Event) { events = append(events, event) })
@@ -43,13 +47,16 @@ All paths below are relative to the isolated worktree
   Run `go test ./pkg/compute/synctrace` first RED, then implement the helper and
   verify GREEN. Use internal deterministic timestamp helpers for negative/missing
   age and duration tests. A failing diagnostic sink must not fail synchronization.
-- [ ] TDD runner integration: use existing fakeStore to assert attempt 2/version 3,
+- [x] TDD runner integration: use existing fakeStore to assert attempt 2/version 3,
   execution failure and completion failure are separate events; empty polling
   emits nothing; panic and fatal lease failure do not emit false success.
   Run `go test ./pkg/compute/syncworker -run Trace -count=1` RED, add hooks,
   then GREEN. Use `synctrace.WithJob` only at the per-job execution boundary.
   Measure claim with `time.Now()`/`time.Since()`, not job timestamps.
-- [ ] TDD producer and resource integration: capture events from
+  Use the pre-claim snapshot to emit `queue_wait` for waiting/retry jobs,
+  `retry_backoff` only on retries, and `lease_recovery_wait` only on expired
+  running jobs. Both endpoints of these ages are database timestamps.
+- [x] TDD producer and resource integration: capture events from
   `prepareAccountProviderRegions` and `planIndependentSyncProviders` using their
   existing fake callbacks. Assert original callback contexts are preserved.
   Check per-resource request/reconcile durations and error outcomes from a
@@ -63,9 +70,9 @@ All paths below are relative to the isolated worktree
   Add admission/pool wait and account probe/import/prepare phase timing.
   Enqueue logs use the ID returned by queue.Enqueue plus the originating run ID.
   Per-region discovery finishing must remain after the existing SDK drain.
-- [ ] Document semantics: claim latency vs job age, overlapping phases, per-attempt
+- [x] Document semantics: claim latency vs job age, overlapping phases, per-attempt
   failures, missing end events, partial request/SQL timer coverage and run-job joins.
-- [ ] Verify: `gofmt`, targeted repeated tests, all five baseline packages plus
+- [x] Verify: `gofmt`, targeted repeated tests, all five baseline packages plus
   synctrace, `go test -race`, disposable MySQL integration if available,
   `git diff --check`, build `cmd/region` and `cmd/sync-worker`.
 - [ ] Review hooks for error shadowing, altered context/lock identity, early
@@ -77,5 +84,29 @@ All paths below are relative to the isolated worktree
 
 ## Verification record
 
-Results are recorded here after commands run; a skipped integration test does not
-count as an integration pass.
+- Baseline: all five original packages passed at 58ad936cb9.
+- RED/GREEN: tracing APIs and queue snapshot tests failed before implementation;
+  worker/model hooks reproduced missing events before the hooks were added.
+- All six affected packages passed the final package test run.
+- All six passed `go test -race -p 2 -count=1` with a disposable MySQL 9.5.0
+  database on a local Unix socket, including queue integration tests. The server
+  was stopped afterward; no application database was used.
+- Trace regressions in synctrace, syncworker and models passed 20 consecutive
+  runs, including callback-context preservation and canceled SDK drain.
+- `gofmt` and `git diff --check` passed. Native darwin/arm64 builds of region and
+  sync-worker passed; binaries are in `/tmp/cmp-sync-phase1-build.FfVcDV/native`.
+- Review found no SQL, resource scope, scheduling, retry, lease or deletion
+  behavior changes. Completion persistence is explicitly distinct from execution.
+- Read-only release resolution: neither cloudpods nor cmp resolved a CDP appId;
+  the installed JumpServer CLI offers no upload command. No deployment occurred.
+- Commit/integration and Linux artifact preparation follow this verification
+  record. The release manifest will identify the exact clean source commit and
+  checksums; a local artifact must not be interpreted as a deployed image.
+
+## Remaining release gate
+
+The last two checklist items include integration/artifact actions performed
+**after** this document is committed. Their results are reported with the final
+commit and release manifest. Remote rollout remains blocked until an authorized
+application/release route is identified and the exact rollout is confirmed.
+No dependency DAG, group splitting, retry policy or admission changes are claimed.

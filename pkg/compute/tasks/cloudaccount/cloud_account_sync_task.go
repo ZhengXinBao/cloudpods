@@ -26,6 +26,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/taskman"
 	"yunion.io/x/onecloud/pkg/compute/models"
+	"yunion.io/x/onecloud/pkg/compute/synctrace"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/util/logclient"
 )
@@ -75,7 +76,8 @@ func (self *CloudAccountSyncInfoTask) OnInit(ctx context.Context, obj db.IStanda
 
 	taskman.LocalTaskRun(self, func() (jsonutils.JSONObject, error) {
 		// do sync
-		prepareCtx, preparationFailures := models.WithCloudSyncErrors(ctx)
+		prepareCtx := synctrace.WithIdentity(ctx, synctrace.Identity{RunID: self.GetTaskId(), AccountID: cloudaccount.Id})
+		prepareCtx, preparationFailures := models.WithCloudSyncErrors(prepareCtx)
 		err := cloudaccount.SyncCallSyncAccountTask(prepareCtx, self.UserCred)
 		if err != nil {
 			if errors.Cause(err) == httperrors.ErrConflict {

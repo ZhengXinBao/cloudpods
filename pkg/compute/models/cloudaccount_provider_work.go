@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"yunion.io/x/onecloud/pkg/compute/synctrace"
 )
 
 type cloudProviderWork struct {
@@ -100,7 +102,10 @@ func prepareAccountProviderRegions(ctx context.Context, providers []SCloudprovid
 			continue
 		}
 		jobs = append(jobs, cloudProviderWork{providerID: provider.Id, run: func(ctx context.Context) error {
-			return prepare(ctx, provider)
+			traceCtx := synctrace.WithIdentity(ctx, synctrace.Identity{AccountID: provider.CloudaccountId, ProviderID: provider.Id})
+			return synctrace.Measure(traceCtx, "provider_prepare", func() error {
+				return prepare(ctx, provider)
+			})
 		}})
 	}
 	return runCloudProviderWork(ctx, jobs, concurrency, nil)

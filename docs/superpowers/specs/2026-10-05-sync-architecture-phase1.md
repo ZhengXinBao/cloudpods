@@ -34,10 +34,13 @@ per-provider planning and per-job enqueue. Enqueue events link run IDs to job ID
 a deduplicated job may belong to multiple runs, so workers must not invent one
 authoritative run ID.
 
-Worker records claim transaction latency for successful claims/errors, job age
-at claim, attempt duration, lock acquisition, ownership verification, resource
+Worker records claim transaction latency for successful claims/errors, actual
+waiting/retry eligibility-to-claim time, configured retry backoff, expired-lease
+recovery wait, job age at claim, attempt duration, lock acquisition, ownership verification, resource
 execution and completion persistence. Empty polling must remain quiet.
 Job age includes past attempts/backoff and is NOT queue wait or execution time.
+Use an in-memory pre-claim timing snapshot with existing DB timestamps; do not
+add persisted fields or confuse a reclaimed running job with an ordinary wait.
 
 Reuse existing per-resource request/reconciliation timers. They cover only
 instrumented calls; reconciliation time is not pure database-server time.

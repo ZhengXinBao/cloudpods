@@ -49,6 +49,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/notifyclient"
 	"yunion.io/x/onecloud/pkg/cloudcommon/validators"
 	"yunion.io/x/onecloud/pkg/compute/options"
+	"yunion.io/x/onecloud/pkg/compute/synctrace"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
@@ -2476,15 +2477,21 @@ func (acnt *SCloudaccount) setSubAccountStatus() error {
 	return err
 }
 
-func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mcclient.TokenCredential, prepareRegions bool) error {
+func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mcclient.TokenCredential, prepareRegions bool) (resultErr error) {
+	traceCtx := synctrace.WithIdentity(ctx, synctrace.Identity{AccountID: account.Id})
+	defer synctrace.End(synctrace.Start(traceCtx, "account_prepare"), &resultErr)
+	probeDone := synctrace.Start(traceCtx, "account_probe")
 	subaccounts, err := account.probeAccountStatus(ctx, userCred)
+	probeDone(err)
 	if err != nil {
 		account.markAllProvidersDisconnected(ctx, userCred)
 		account.markAccountDisconected(ctx, userCred, errors.Wrapf(err, "probeAccountStatus").Error())
 		return errors.Wrap(err, "account.probeAccountStatus")
 	}
 	account.markAccountConnected(ctx, userCred)
+	importDone := synctrace.Start(traceCtx, "subscription_import")
 	providers := account.importAllSubaccounts(ctx, userCred, subaccounts)
+	importDone(nil)
 	keepRegionExtIds := account.getSubAccountRegionExternalIds()
 	if prepareRegions {
 		concurrency := options.Options.CloudAccountRegionPrepareConcurrency
@@ -2518,8 +2525,11 @@ func (account *SCloudaccount) syncAccountStatus(ctx context.Context, userCred mc
 var cloudaccountSyncAdmissions cloudaccountSyncAdmission
 
 func (account *SCloudaccount) SubmitSyncAccountTask(ctx context.Context, userCred mcclient.TokenCredential, waitChan chan error) {
+	traceCtx := synctrace.WithIdentity(ctx, synctrace.Identity{AccountID: account.Id})
+	admissionStart := time.Now()
 	submit := func() {
 		release, err := cloudaccountSyncAdmissions.acquire(ctx, account.Id, waitChan != nil)
+		synctrace.Duration(traceCtx, "account_admission", time.Since(admissionStart), err)
 		if err != nil {
 			deliverCloudaccountSyncResult(ctx, waitChan, err)
 			return
@@ -2527,7 +2537,9 @@ func (account *SCloudaccount) SubmitSyncAccountTask(ctx context.Context, userCre
 		if release == nil {
 			return
 		}
+		poolStart := time.Now()
 		RunSyncCloudAccountSyncTask(ctx, func() {
+			synctrace.Duration(traceCtx, "account_pool_wait", time.Since(poolStart), nil)
 			err := func() error {
 				defer release()
 				if err := ctx.Err(); err != nil {

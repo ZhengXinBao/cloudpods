@@ -30,6 +30,7 @@ import (
 	api "yunion.io/x/onecloud/pkg/apis/compute"
 	"yunion.io/x/onecloud/pkg/cloudcommon/db"
 	"yunion.io/x/onecloud/pkg/compute/options"
+	"yunion.io/x/onecloud/pkg/compute/synctrace"
 	"yunion.io/x/onecloud/pkg/mcclient"
 )
 
@@ -396,26 +397,33 @@ func (acnt *SCloudaccount) discoverCloudproviderRegionsReady(ctx context.Context
 		item := items[idx]
 		jobs = append(jobs, cloudProviderWork{providerID: item.provider.Id, run: func(ctx context.Context) error {
 			provider, cpr := item.provider, item.cpr
+			traceCtx := synctrace.WithIdentity(ctx, synctrace.Identity{AccountID: acnt.Id, ProviderID: provider.Id, RegionID: cpr.CloudregionId})
+			var traceErr error
+			defer synctrace.End(synctrace.Start(traceCtx, "region_discover"), &traceErr)
 			region, err := cpr.GetRegion()
 			if err != nil {
+				traceErr = err
 				cloudSyncError(ctx, "discover GetRegion %s/%s: %v", provider.Id, cpr.CloudregionId, err)
 				return nil
 			}
 			driver, err := getDriver(ctx, provider)
 			if err != nil {
+				traceErr = err
 				cloudSyncError(ctx, "discover GetProvider %s: %v", provider.Id, err)
 				return nil
 			}
 			iregion, err := driver.GetIRegionById(region.ExternalId)
 			if err != nil {
+				traceErr = err
 				cloudSyncError(ctx, "discover GetIRegionById %s/%s: %v", provider.Id, region.ExternalId, err)
 				return nil
 			}
 			hasResources, err, probeDone := cloudRegionHasResourcesWithTimeoutDone(iregion, cloudRegionDiscoverTimeout)
 			// Keep the provider scheduling slot until a timed-out probe exits. The
 			// provider driver may still be using a connection after timeout.
-			defer func() { <-probeDone }()
+			defer traceCloudProbeDrain(traceCtx, probeDone)
 			if err != nil {
+				traceErr = err
 				cloudSyncError(ctx, "discover cloud resources %s/%s: %v", provider.Name, region.Name, err)
 				return nil
 			}
@@ -429,6 +437,7 @@ func (acnt *SCloudaccount) discoverCloudproviderRegionsReady(ctx context.Context
 				return nil
 			})
 			if err != nil {
+				traceErr = err
 				cloudSyncError(ctx, "update discovered cloudproviderregion %s/%s: %v", provider.Id, region.Id, err)
 				return nil
 			}

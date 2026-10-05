@@ -29,6 +29,7 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/compute/policy"
 	"yunion.io/x/onecloud/pkg/compute/syncqueue"
+	"yunion.io/x/onecloud/pkg/compute/synctrace"
 	"yunion.io/x/onecloud/pkg/compute/syncworker"
 	"yunion.io/x/onecloud/pkg/mcclient/auth"
 )
@@ -131,14 +132,18 @@ func StartSyncWorker() error {
 		return err
 	}
 	execute := func(ctx context.Context, job *syncqueue.Job) (executionErr error) {
+		lockDone := synctrace.Start(ctx, "lock")
 		release, err := locker.Acquire(ctx, job)
+		lockDone(err)
 		if err != nil {
 			return err
 		}
 		defer release()
 		// Claim may have expired while waiting for a previous execution's mutex.
 		checkCtx, cancel := context.WithTimeout(ctx, config.HeartbeatInterval)
-		err = queue.Heartbeat(checkCtx, job, config.LeaseDuration)
+		err = synctrace.Measure(ctx, "ownership_check", func() error {
+			return queue.Heartbeat(checkCtx, job, config.LeaseDuration)
+		})
 		cancel()
 		if err != nil {
 			return err
@@ -154,7 +159,9 @@ func StartSyncWorker() error {
 			return fmt.Errorf("sync retry budget exhausted after worker recovery")
 		}
 		log.Infof("sync worker executing job=%s run-account=%s provider=%s region=%s attempt=%d requester=%s", job.ID, job.AccountID, job.ProviderID, job.RegionID, job.Attempts, job.RequestedBy)
-		return models.ExecuteCloudSyncJob(ctx, auth.AdminCredential(), job)
+		return synctrace.Measure(ctx, "resource_execute", func() error {
+			return models.ExecuteCloudSyncJob(ctx, auth.AdminCredential(), job)
+		})
 	}
 	runner, err := syncworker.New(config, queue, execute, fatal)
 	if err != nil {

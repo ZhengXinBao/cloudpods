@@ -192,6 +192,10 @@ func TestMySQLLifecycle(t *testing.T) {
 	if err != nil || providerJob == nil || providerJob.ID != providerID {
 		t.Fatalf("provider dependency must claim first: job=%v err=%v", providerJob, err)
 	}
+	if providerJob.ClaimTiming == nil || providerJob.ClaimTiming.PreviousState != Waiting ||
+		!providerJob.ClaimTiming.EligibleAt.Equal(providerJob.AvailableAt) {
+		t.Fatalf("claim lost pre-transition timing: %+v", providerJob.ClaimTiming)
+	}
 	activeProviders, err := q.ActiveProviderJobCounts(ctx, []string{"dependency-provider", "missing-provider"})
 	if err != nil || activeProviders["dependency-provider"] != 1 || activeProviders["missing-provider"] != 0 {
 		t.Fatalf("active provider counts: counts=%v err=%v", activeProviders, err)

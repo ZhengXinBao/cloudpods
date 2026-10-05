@@ -13,6 +13,7 @@ import (
 	"yunion.io/x/onecloud/pkg/cloudcommon/db/lockman"
 	"yunion.io/x/onecloud/pkg/compute/options"
 	"yunion.io/x/onecloud/pkg/compute/syncqueue"
+	"yunion.io/x/onecloud/pkg/compute/synctrace"
 	"yunion.io/x/onecloud/pkg/compute/syncworker"
 	"yunion.io/x/onecloud/pkg/httperrors"
 	"yunion.io/x/onecloud/pkg/mcclient"
@@ -67,7 +68,11 @@ func (self *SCloudproviderregion) enqueueResourceSync(ctx context.Context, cred 
 		request.ProjectID = cred.GetProjectId()
 		request.DomainID = cred.GetProjectDomainId()
 	}
-	if _, err := CloudSyncQueue().Enqueue(ctx, request); err != nil {
+	start := time.Now()
+	jobID, err := CloudSyncQueue().Enqueue(ctx, request)
+	traceCtx := synctrace.WithIdentity(ctx, synctrace.Identity{RunID: runID, AccountID: provider.CloudaccountId, ProviderID: provider.Id, RegionID: self.CloudregionId, ResourceGroup: resourceGroup, JobID: jobID})
+	synctrace.Duration(traceCtx, "enqueue", time.Since(start), err)
+	if err != nil {
 		return fmt.Errorf("enqueue region sync: %w", err)
 	}
 
@@ -88,7 +93,11 @@ func (provider *SCloudprovider) enqueueProviderSync(ctx context.Context, cred mc
 		request.ProjectID = cred.GetProjectId()
 		request.DomainID = cred.GetProjectDomainId()
 	}
-	if _, err := CloudSyncQueue().Enqueue(ctx, request); err != nil {
+	start := time.Now()
+	jobID, err := CloudSyncQueue().Enqueue(ctx, request)
+	traceCtx := synctrace.WithIdentity(ctx, synctrace.Identity{RunID: runID, AccountID: provider.CloudaccountId, ProviderID: provider.Id, ResourceGroup: resourceGroup, JobID: jobID})
+	synctrace.Duration(traceCtx, "enqueue", time.Since(start), err)
+	if err != nil {
 		return fmt.Errorf("enqueue provider sync: %w", err)
 	}
 	return nil
@@ -97,6 +106,8 @@ func (provider *SCloudprovider) enqueueProviderSync(ctx context.Context, cred mc
 // EnqueueIndependentAccountRegions streams each discovered provider into the
 // same durable run. The caller must seal only after this producer returns.
 func (account *SCloudaccount) EnqueueIndependentAccountRegions(ctx context.Context, cred mcclient.TokenCredential, sr SSyncRange, runID string) error {
+	// Establish producer identity once, before creating provider lock contexts.
+	ctx = synctrace.WithIdentity(ctx, synctrace.Identity{RunID: runID, AccountID: account.Id})
 	if err := sr.Normalize(ctx); err != nil {
 		return err
 	}
@@ -120,15 +131,21 @@ func (account *SCloudaccount) EnqueueIndependentAccountRegions(ctx context.Conte
 }
 
 func planIndependentSyncProviders(ctx context.Context, sr SSyncRange, runID string, discover func(context.Context, func(context.Context, *SCloudprovider) error) error, ready func(context.Context, *SCloudprovider, SSyncRange, string) error) error {
-	discoverCtx, failures := WithCloudSyncErrors(ctx)
-	sr = AccountFanoutSyncRange(sr)
-	err := discover(discoverCtx, func(providerCtx context.Context, provider *SCloudprovider) error {
-		if err := providerCtx.Err(); err != nil {
-			return err
-		}
-		return ready(providerCtx, provider, sr, runID)
+	traceCtx := synctrace.WithIdentity(ctx, synctrace.Identity{RunID: runID})
+	return synctrace.Measure(traceCtx, "discover_plan", func() error {
+		discoverCtx, failures := WithCloudSyncErrors(ctx)
+		sr = AccountFanoutSyncRange(sr)
+		err := discover(discoverCtx, func(providerCtx context.Context, provider *SCloudprovider) error {
+			if err := providerCtx.Err(); err != nil {
+				return err
+			}
+			providerTrace := synctrace.WithIdentity(traceCtx, synctrace.Identity{ProviderID: provider.Id, AccountID: provider.CloudaccountId})
+			return synctrace.Measure(providerTrace, "provider_plan", func() error {
+				return ready(providerCtx, provider, sr, runID)
+			})
+		})
+		return errors.Join(err, failures.Error())
 	})
-	return errors.Join(err, failures.Error())
 }
 
 // EnqueueIndependentRegions plans all eligible regions synchronously. The caller

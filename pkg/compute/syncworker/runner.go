@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"yunion.io/x/onecloud/pkg/compute/syncqueue"
+	"yunion.io/x/onecloud/pkg/compute/synctrace"
 )
 
 // Store must preserve the job's worker and version when renewing or completing it.
@@ -88,14 +89,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		go func() {
 			defer wg.Done()
 			for claimCtx.Err() == nil {
+				claimStart := time.Now()
 				job, err := r.store.Claim(claimCtx, r.config.WorkerID, r.config.LeaseDuration)
 				if err != nil {
 					if claimCtx.Err() != nil {
 						return
 					}
+					synctrace.Duration(synctrace.WithIdentity(claimCtx, synctrace.Identity{WorkerID: r.config.WorkerID}), "claim", time.Since(claimStart), err)
 					r.report(fmt.Errorf("claim sync job: %w", err))
 				}
 				if job != nil && err == nil {
+					synctrace.Duration(synctrace.WithJob(claimCtx, job), "claim", time.Since(claimStart), nil)
 					r.runJob(executionCtx, job, fail)
 					continue
 				}
@@ -146,15 +150,32 @@ func (r *Runner) runJob(ctx context.Context, job *syncqueue.Job, fail func(error
 	if ctx.Err() != nil {
 		return
 	}
+	ctx = synctrace.WithJob(ctx, job)
+	// Both timestamps come from the DB at claim time. This is accumulated job
+	// age (including prior attempts/backoff), not a per-attempt queue duration.
+	synctrace.Age(ctx, "job_age", job.CreatedAt, job.UpdatedAt)
+	if timing := job.ClaimTiming; timing != nil {
+		switch timing.PreviousState {
+		case syncqueue.Waiting, syncqueue.Retry:
+			synctrace.Age(ctx, "queue_wait", timing.EligibleAt, job.UpdatedAt)
+			if timing.PreviousState == syncqueue.Retry {
+				synctrace.Cost(ctx, "retry_backoff", timing.RetryBackoff)
+			}
+		case syncqueue.Running:
+			synctrace.Age(ctx, "lease_recovery_wait", timing.EligibleAt, job.UpdatedAt)
+		}
+	}
 	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	result := make(chan error, 1)
 	go func() {
 		var err error
+		finish := synctrace.Start(jobCtx, "attempt")
 		defer func() {
 			if p := recover(); p != nil {
 				err = fmt.Errorf("sync job %s panic: %v\n%s", job.ID, p, debug.Stack())
 			}
+			finish(err)
 			result <- err
 		}()
 		if jobCtx.Err() != nil {
@@ -170,11 +191,13 @@ func (r *Runner) runJob(ctx context.Context, job *syncqueue.Job, fail func(error
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			heartbeatStart := time.Now()
 			err := r.bounded(jobCtx, func(opCtx context.Context) error { return r.store.Heartbeat(opCtx, job, r.config.LeaseDuration) })
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
+				synctrace.Duration(jobCtx, "heartbeat_failure", time.Since(heartbeatStart), err)
 				fail(fmt.Errorf("renew sync job %s lease: %w", job.ID, err))
 				return
 			}
@@ -185,8 +208,10 @@ func (r *Runner) runJob(ctx context.Context, job *syncqueue.Job, fail func(error
 			if err != nil {
 				r.report(err)
 			}
-			completionErr := r.bounded(jobCtx, func(opCtx context.Context) error {
-				return r.store.Complete(opCtx, job, err, r.config.MaxAttempts, r.config.RetryDelay)
+			completionErr := synctrace.Measure(jobCtx, "complete", func() error {
+				return r.bounded(jobCtx, func(opCtx context.Context) error {
+					return r.store.Complete(opCtx, job, err, r.config.MaxAttempts, r.config.RetryDelay)
+				})
 			})
 			if completionErr != nil && ctx.Err() == nil {
 				fail(fmt.Errorf("complete sync job %s: %w", job.ID, completionErr))

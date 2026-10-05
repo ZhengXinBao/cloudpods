@@ -3186,6 +3186,7 @@ func syncProjects(ctx context.Context, userCred mcclient.TokenCredential, syncRe
 
 func SyncCloudproviderResources(ctx context.Context, userCred mcclient.TokenCredential, provider *SCloudprovider, syncRange *SSyncRange) error {
 	syncResults := SSyncResultSet{}
+	defer traceSyncResultCosts(ctx, syncResults)
 	driver, err := provider.GetProvider(ctx)
 	if err != nil {
 		return errors.Wrapf(err, "GetProvider")
