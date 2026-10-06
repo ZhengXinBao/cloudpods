@@ -62,6 +62,35 @@ type SDisk struct {
 	DeleteWithInstance bool                `json:"DeleteWithInstance"`
 }
 
+func (region *SRegion) GetIDiskById(id string) (cloudprovider.ICloudDisk, error) {
+	if len(id) == 0 {
+		return nil, fmt.Errorf("empty disk id")
+	}
+	disk, err := region.GetDisk(id)
+	if err != nil {
+		return nil, errors.Wrap(err, "GetDisk")
+	}
+	// A disk found without its storage identity is not a missing disk.
+	// Returning ErrNotFound (or a disk without storage) here could cause
+	// reconciliation to remove a disk that still exists in the cloud.
+	if len(disk.AvailabilityZone) == 0 {
+		return nil, fmt.Errorf("disk %s missing availability zone", id)
+	}
+	if len(disk.VolumeType) == 0 {
+		return nil, fmt.Errorf("disk %s missing volume type", id)
+	}
+	// Derive the existing disk's storage identity from its own metadata,
+	// rather than depending on the catalog of currently purchasable types.
+	disk.storage = &SStorage{
+		zone: &SZone{
+			region:           region,
+			AvailabilityZone: disk.AvailabilityZone,
+		},
+		StorageType: disk.VolumeType,
+	}
+	return disk, nil
+}
+
 func (region *SRegion) GetDisk(diskId string) (*SDisk, error) {
 	disks, err := region.GetDisks([]string{diskId}, "", "")
 	if err != nil {

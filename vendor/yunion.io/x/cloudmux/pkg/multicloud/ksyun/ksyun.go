@@ -394,6 +394,9 @@ func (cli *SKsyunClient) _request(service, regionId, apiName, apiVersion string,
 	if err != nil {
 		return nil, err
 	}
+	if gotypes.IsNil(resp) {
+		return nil, fmt.Errorf("%s %s returned an empty or non-JSON response", service, apiName)
+	}
 	if info, err := resp.GetMap(); err == nil {
 		for k, v := range info {
 			if strings.HasSuffix(k, "Result") {
