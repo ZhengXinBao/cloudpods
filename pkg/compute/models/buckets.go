@@ -154,7 +154,7 @@ func (manager *SBucketManager) syncBuckets(ctx context.Context, userCred mcclien
 	}
 	if !xor {
 		for i := 0; i < len(commondb); i += 1 {
-			err = commondb[i].SyncWithCloudBucket(ctx, userCred, commonext[i], false)
+			err = commondb[i].syncWithCloudBucket(ctx, userCred, commonext[i], false)
 			if err != nil {
 				syncResult.UpdateError(err)
 			} else {
@@ -188,40 +188,8 @@ func (manager *SBucketManager) newFromCloudBucket(
 	bucket.ExternalId = extBucket.GetGlobalId()
 	bucket.ManagerId = provider.Id
 	bucket.CloudregionId = region.Id
-	bucket.Status = api.BUCKET_STATUS_READY
-
-	created := extBucket.GetCreatedAt()
-	if !created.IsZero() {
-		bucket.CreatedAt = created
-	}
-
-	bucket.Location = extBucket.GetLocation()
-	bucket.StorageClass = extBucket.GetStorageClass()
-	bucket.Acl = string(extBucket.GetAcl())
-	if !extBucket.GetCreatedAt().IsZero() {
-		bucket.CreatedAt = extBucket.GetCreatedAt()
-	}
-
-	stats := extBucket.GetStats()
-	bucket.SizeBytes = stats.SizeBytes
-	if bucket.SizeBytes < 0 {
-		bucket.SizeBytes = 0
-	}
-	bucket.ObjectCnt = stats.ObjectCount
-	if bucket.ObjectCnt < 0 {
-		bucket.ObjectCnt = 0
-	}
-
-	limit := extBucket.GetLimit()
-	limitSupport := extBucket.LimitSupport()
-	if limitSupport.SizeBytes > 0 {
-		bucket.SizeBytesLimit = limit.SizeBytes
-	}
-	if limitSupport.ObjectCount > 0 {
-		bucket.ObjectCntLimit = limit.ObjectCount
-	}
-
-	bucket.AccessUrls = jsonutils.Marshal(extBucket.GetAccessUrls())
+	snapshot := captureCloudBucketSnapshot(extBucket, false)
+	snapshot.apply(&bucket)
 
 	bucket.IsEmulated = false
 
@@ -251,7 +219,7 @@ func (manager *SBucketManager) newFromCloudBucket(
 	syncVirtualResourceMetadata(ctx, userCred, &bucket, extBucket, false)
 	db.OpsLog.LogEvent(&bucket, db.ACT_CREATE, bucket.GetShortDesc(ctx), userCred)
 
-	return &bucket, nil
+	return &bucket, snapshot.statsError()
 }
 
 func (bucket *SBucket) getStats() cloudprovider.SBucketStats {
@@ -283,42 +251,20 @@ func (bucket *SBucket) SyncWithCloudBucket(
 	extBucket cloudprovider.ICloudBucket,
 	statsOnly bool,
 ) error {
-	oStats := bucket.getStats()
+	return bucketOperationSyncError(bucket.syncWithCloudBucket(ctx, userCred, extBucket, statsOnly))
+}
+
+// Full inventory reconciliation requires complete statistics, unlike ancillary
+// refreshes after an otherwise successful Bucket operation.
+func (bucket *SBucket) syncWithCloudBucket(
+	ctx context.Context,
+	userCred mcclient.TokenCredential,
+	extBucket cloudprovider.ICloudBucket,
+	statsOnly bool,
+) error {
+	snapshot := captureCloudBucketSnapshot(extBucket, statsOnly)
 	diff, err := db.UpdateWithLock(ctx, bucket, func() error {
-		stats := extBucket.GetStats()
-		bucket.SizeBytes = stats.SizeBytes
-		if bucket.SizeBytes < 0 {
-			bucket.SizeBytes = 0
-		}
-		bucket.ObjectCnt = stats.ObjectCount
-		if bucket.ObjectCnt < 0 {
-			bucket.ObjectCnt = 0
-		}
-
-		created := extBucket.GetCreatedAt()
-		if !created.IsZero() {
-			bucket.CreatedAt = created
-		}
-
-		if !statsOnly {
-			limit := extBucket.GetLimit()
-			limitSupport := extBucket.LimitSupport()
-			if limitSupport.SizeBytes > 0 {
-				bucket.SizeBytesLimit = limit.SizeBytes
-			}
-			if limitSupport.ObjectCount > 0 {
-				bucket.ObjectCntLimit = limit.ObjectCount
-			}
-
-			bucket.Acl = string(extBucket.GetAcl())
-			bucket.Location = extBucket.GetLocation()
-			bucket.StorageClass = extBucket.GetStorageClass()
-
-			bucket.AccessUrls = jsonutils.Marshal(extBucket.GetAccessUrls())
-
-			bucket.Status = api.BUCKET_STATUS_READY
-		}
-
+		snapshot.apply(bucket)
 		return nil
 	})
 	if err != nil {
@@ -337,7 +283,7 @@ func (bucket *SBucket) SyncWithCloudBucket(
 		})
 	}
 
-	if !oStats.Equals(extBucket.GetStats()) {
+	if bucketStatsChanged(diff) {
 		db.OpsLog.LogEvent(bucket, api.BUCKET_OPS_STATS_CHANGE, bucket.GetShortDesc(ctx), userCred)
 	}
 
@@ -347,7 +293,7 @@ func (bucket *SBucket) SyncWithCloudBucket(
 		bucket.SyncShareState(ctx, userCred, provider.getAccountShareInfo())
 	}
 
-	return nil
+	return snapshot.statsError()
 }
 
 func (bucket *SBucket) syncRemoveCloudBucket(
