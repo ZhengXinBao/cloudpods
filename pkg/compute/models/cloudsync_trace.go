@@ -6,6 +6,19 @@ import (
 	"yunion.io/x/onecloud/pkg/compute/synctrace"
 )
 
+// Closures retain the original SDK/lock context; ctx is only for diagnostics.
+func traceCloudSyncStage(ctx context.Context, phase string, work func() error) error {
+	if !synctrace.Enabled(ctx) {
+		return work()
+	}
+	return synctrace.Measure(ctx, phase, work)
+}
+
+// Result-set and void routines report their own failures, so observe only cost.
+func observeCloudSyncStage(ctx context.Context, phase string, work func()) {
+	synctrace.Observe(ctx, phase, work)
+}
+
 // Reuse existing timers without changing synchronization or adding locks to the
 // result map. Call after the synchronous executor returns, including on errors.
 // Coverage is partial: "reconcile" includes application work, not just SQL time.

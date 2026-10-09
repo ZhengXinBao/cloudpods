@@ -109,3 +109,95 @@ func TestTraceSinkCannotChangeWorkResult(t *testing.T) {
 		t.Fatalf("work result changed: %v", err)
 	}
 }
+
+func TestObserveRecordsStartAndNeutralCostOnce(t *testing.T) {
+	ctx, events := capture()
+	identity := Identity{AccountID: "account", JobID: "job", ProviderID: "provider", RegionID: "region", ResourceGroup: "core", Attempt: 2}
+	ctx = WithIdentity(ctx, identity)
+	calls := 0
+	started := time.Now()
+	Observe(ctx, "core_zones", func() {
+		calls++
+		if len(*events) != 1 || (*events)[0].Kind != "start" {
+			t.Fatalf("work must run after start and before cost: %+v", *events)
+		}
+		time.Sleep(5 * time.Millisecond)
+	})
+	if calls != 1 || len(*events) != 2 {
+		t.Fatalf("calls=%d events=%+v", calls, *events)
+	}
+	for _, event := range *events {
+		if event.Phase != "core_zones" || event.Outcome != "" || event.ErrorClass != "" || event.Identity != identity || event.Schema != 1 || event.At.IsZero() {
+			t.Fatalf("invalid observation: %+v", event)
+		}
+	}
+	cost := (*events)[1]
+	if cost.Kind != "cost" || cost.DurationMS < 5 || cost.DurationMS > time.Since(started).Milliseconds() {
+		t.Fatalf("invalid elapsed cost: %+v", cost)
+	}
+}
+
+func TestObserveDisabledRunsOnceWithoutEvents(t *testing.T) {
+	ctx, events := capture()
+	// Provider/region metadata alone does not enable tracing.
+	ctx = WithIdentity(ctx, Identity{ProviderID: "provider", RegionID: "region"})
+	calls := 0
+	Observe(ctx, "core_zones", func() { calls++ })
+	if calls != 1 || len(*events) != 0 {
+		t.Fatalf("calls=%d events=%+v", calls, *events)
+	}
+}
+
+func TestObservePreservesPanicWithoutPayload(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		ctx, events := capture()
+		if enabled {
+			ctx = WithIdentity(ctx, Identity{JobID: "job"})
+		}
+		want := errors.New("SECRET_OBSERVATION_PANIC")
+		calls := 0
+		func() {
+			defer func() {
+				if got := recover(); got != want {
+					t.Errorf("panic changed: got=%v want=%v", got, want)
+				}
+			}()
+			Observe(ctx, "core_zones", func() {
+				calls++
+				panic(want)
+			})
+		}()
+		if calls != 1 {
+			t.Fatalf("work ran %d times", calls)
+		}
+		if enabled {
+			if len(*events) != 2 || (*events)[0].Kind != "start" || (*events)[1].Kind != "cost" || (*events)[1].Outcome != "error" || (*events)[1].ErrorClass != syncqueue.ErrorClassUnknown {
+				t.Fatalf("missing panic observation: %+v", *events)
+			}
+		} else if len(*events) != 0 {
+			t.Fatalf("disabled trace emitted events: %+v", *events)
+		}
+		data, err := json.Marshal(events)
+		if err != nil || strings.Contains(string(data), want.Error()) {
+			t.Fatalf("trace leaked panic payload: %s (marshal error: %v)", data, err)
+		}
+	}
+}
+
+func TestObserveSinkPanicCannotChangeWork(t *testing.T) {
+	ctx := WithIdentity(WithSink(context.Background(), func(Event) { panic("broken logger") }), Identity{JobID: "job"})
+	calls := 0
+	Observe(ctx, "core_zones", func() { calls++ })
+	if calls != 1 {
+		t.Fatalf("work ran %d times", calls)
+	}
+	want := errors.New("original panic")
+	func() {
+		defer func() {
+			if got := recover(); got != want {
+				t.Errorf("sink replaced panic: got=%v want=%v", got, want)
+			}
+		}()
+		Observe(ctx, "core_zones", func() { panic(want) })
+	}()
+}

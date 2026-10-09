@@ -2617,39 +2617,43 @@ func syncPublicCloudProviderInfo(
 	var localZones []SZone
 	var remoteZones []cloudprovider.ICloudZone
 	if shouldSyncRegionZones(syncRange) {
-		localZones, remoteZones, _ = syncRegionZones(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange.Xor)
+		observeCloudSyncStage(ctx, "core_zones", func() {
+			localZones, remoteZones, _ = syncRegionZones(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange.Xor)
+		})
 	}
 
 	if syncRange.DeepSync {
-		if !driver.GetFactory().NeedSyncSkuFromCloud() {
-			syncRegionSkus(ctx, userCred, localRegion, syncRange.Xor, syncRange)
-			if shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_NAT, NatSkuManager) {
-				SyncRegionNatSkus(ctx, userCred, localRegion.Id, true, syncRange.Xor)
-			}
-			if shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_NAS, NasSkuManager) {
-				SyncRegionNasSkus(ctx, userCred, localRegion.Id, true, syncRange.Xor)
-			}
-		} else {
-			if shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_COMPUTE, ServerSkuManager) ||
-				shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_IMAGE, ServerSkuManager) {
-				syncSkusFromPrivateCloud(ctx, userCred, syncResults, localRegion, remoteRegion, syncRange.Xor)
-			}
-			if cloudprovider.IsSupportRds(driver) && shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_RDS, DBInstanceSkuManager) {
-				if syncRange.IsNotSkipSyncResource(DBInstanceManager) {
-					syncDBInstanceSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+		observeCloudSyncStage(ctx, "core_skus", func() {
+			if !driver.GetFactory().NeedSyncSkuFromCloud() {
+				syncRegionSkus(ctx, userCred, localRegion, syncRange.Xor, syncRange)
+				if shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_NAT, NatSkuManager) {
+					SyncRegionNatSkus(ctx, userCred, localRegion.Id, true, syncRange.Xor)
+				}
+				if shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_NAS, NasSkuManager) {
+					SyncRegionNasSkus(ctx, userCred, localRegion.Id, true, syncRange.Xor)
+				}
+			} else {
+				if shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_COMPUTE, ServerSkuManager) ||
+					shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_IMAGE, ServerSkuManager) {
+					syncSkusFromPrivateCloud(ctx, userCred, syncResults, localRegion, remoteRegion, syncRange.Xor)
+				}
+				if cloudprovider.IsSupportRds(driver) && shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_RDS, DBInstanceSkuManager) {
+					if syncRange.IsNotSkipSyncResource(DBInstanceManager) {
+						syncDBInstanceSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+					}
+				}
+				if cloudprovider.IsSupportNAT(driver) && shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_NAT, NatSkuManager) {
+					if syncRange.IsNotSkipSyncResource(NatSkuManager) {
+						syncNATSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+					}
+				}
+				if cloudprovider.IsSupportElasticCache(driver) && shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_CACHE, ElasticcacheManager) {
+					if syncRange.IsNotSkipSyncResource(ElasticcacheManager) {
+						syncCacheSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+					}
 				}
 			}
-			if cloudprovider.IsSupportNAT(driver) && shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_NAT, NatSkuManager) {
-				if syncRange.IsNotSkipSyncResource(NatSkuManager) {
-					syncNATSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
-				}
-			}
-			if cloudprovider.IsSupportElasticCache(driver) && shouldSyncResourceSkus(syncRange, cloudprovider.CLOUD_CAPABILITY_CACHE, ElasticcacheManager) {
-				if syncRange.IsNotSkipSyncResource(ElasticcacheManager) {
-					syncCacheSkus(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
-				}
-			}
-		}
+		})
 	}
 
 	// no need to lock public cloud region as cloud region for public cloud is readonly
@@ -2704,11 +2708,16 @@ func syncPublicCloudProviderInfo(
 				}
 				// no need to lock zone as public cloud zone is read-only
 
-				newPairs := syncZoneStorages(ctx, userCred, syncResults, provider, driver, &localZones[j], remoteZones[j], syncRange, storageCachePairs)
+				var newPairs []sStoragecacheSyncPair
+				observeCloudSyncStage(ctx, "core_zone_storages", func() {
+					newPairs = syncZoneStorages(ctx, userCred, syncResults, provider, driver, &localZones[j], remoteZones[j], syncRange, storageCachePairs)
+				})
 				if len(newPairs) > 0 {
 					storageCachePairs = append(storageCachePairs, newPairs...)
 				}
-				newPairs = syncZoneHosts(ctx, userCred, syncResults, provider, driver, &localZones[j], remoteZones[j], syncRange, storageCachePairs)
+				observeCloudSyncStage(ctx, "core_zone_hosts", func() {
+					newPairs = syncZoneHosts(ctx, userCred, syncResults, provider, driver, &localZones[j], remoteZones[j], syncRange, storageCachePairs)
+				})
 				if len(newPairs) > 0 {
 					storageCachePairs = append(storageCachePairs, newPairs...)
 				}
@@ -2716,7 +2725,9 @@ func syncPublicCloudProviderInfo(
 
 			// sync snapshots after sync disks
 			if syncRange.IsNotSkipSyncResource(SnapshotManager) {
-				syncRegionSnapshots(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+				observeCloudSyncStage(ctx, "core_snapshots", func() {
+					syncRegionSnapshots(ctx, userCred, syncResults, provider, localRegion, remoteRegion, syncRange)
+				})
 			}
 		}
 	}
@@ -2833,21 +2844,23 @@ func syncPublicCloudProviderInfo(
 
 	if cloudprovider.IsSupportCompute(driver) && (syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_COMPUTE) || syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_IMAGE)) && syncRange.IsNotSkipSyncResource(CachedimageManager) {
 		log.Debugf("storageCachePairs count %d", len(storageCachePairs))
-		for i := range storageCachePairs {
-			// always sync private cloud cached images
-			if storageCachePairs[i].isNew || syncRange.DeepSync || !driver.GetFactory().IsPublicCloud() {
-				result := func() compare.SyncResult {
-					defer syncResults.AddRequestCost(CachedimageManager)()
-					return storageCachePairs[i].syncCloudImages(ctx, userCred, syncRange.Xor)
-				}()
+		observeCloudSyncStage(ctx, "core_cached_images", func() {
+			for i := range storageCachePairs {
+				// always sync private cloud cached images
+				if storageCachePairs[i].isNew || syncRange.DeepSync || !driver.GetFactory().IsPublicCloud() {
+					result := func() compare.SyncResult {
+						defer syncResults.AddRequestCost(CachedimageManager)()
+						return storageCachePairs[i].syncCloudImages(ctx, userCred, syncRange.Xor)
+					}()
 
-				syncResults.Add(CachedimageManager, result)
+					syncResults.Add(CachedimageManager, result)
 
-				notes := fmt.Sprintf("syncCloudImages for %s provider %s result: %s", storageCachePairs[i].local.GetName(), provider.Name, result.Result())
-				log.Infof("%s", notes)
-				provider.SyncError(result, notes, userCred)
+					notes := fmt.Sprintf("syncCloudImages for %s provider %s result: %s", storageCachePairs[i].local.GetName(), provider.Name, result.Result())
+					log.Infof("%s", notes)
+					provider.SyncError(result, notes, userCred)
+				}
 			}
-		}
+		})
 	}
 
 	return nil
@@ -3027,20 +3040,22 @@ func syncOnPremiseCloudProviderInfo(
 
 	if cloudprovider.IsSupportCompute(driver) && (syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_COMPUTE) || syncRange.NeedSyncResource(cloudprovider.CLOUD_CAPABILITY_IMAGE)) && syncRange.IsNotSkipSyncResource(CachedimageManager) {
 		log.Debugf("storageCachePairs count %d", len(storageCachePairs))
-		for i := range storageCachePairs {
-			// alway sync on-premise cached images
-			// if storageCachePairs[i].isNew || syncRange.DeepSync {
-			result := func() compare.SyncResult {
-				defer syncResults.AddRequestCost(CachedimageManager)()
-				return storageCachePairs[i].syncCloudImages(ctx, userCred, syncRange.Xor)
-			}()
+		observeCloudSyncStage(ctx, "core_cached_images", func() {
+			for i := range storageCachePairs {
+				// alway sync on-premise cached images
+				// if storageCachePairs[i].isNew || syncRange.DeepSync {
+				result := func() compare.SyncResult {
+					defer syncResults.AddRequestCost(CachedimageManager)()
+					return storageCachePairs[i].syncCloudImages(ctx, userCred, syncRange.Xor)
+				}()
 
-			syncResults.Add(CachedimageManager, result)
-			notes := fmt.Sprintf("syncCloudImages for stroagecache %s provider %s result: %s", storageCachePairs[i].local.GetId(), provider.Name, result.Result())
-			log.Infof("%s", notes)
-			provider.SyncError(result, notes, userCred)
-			// }
-		}
+				syncResults.Add(CachedimageManager, result)
+				notes := fmt.Sprintf("syncCloudImages for stroagecache %s provider %s result: %s", storageCachePairs[i].local.GetId(), provider.Name, result.Result())
+				log.Infof("%s", notes)
+				provider.SyncError(result, notes, userCred)
+				// }
+			}
+		})
 	}
 
 	return nil

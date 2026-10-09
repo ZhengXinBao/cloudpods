@@ -121,6 +121,29 @@ func Cost(ctx context.Context, phase string, elapsed time.Duration) {
 	emit(ctx, Event{Phase: phase, Kind: "cost", DurationMS: max(0, elapsed.Milliseconds())})
 }
 
+// Observe records start and elapsed cost without asserting success for work
+// which reports failures through result sets or logs. It preserves panics without
+// emitting their payload and executes work exactly once, even when disabled.
+func Observe(ctx context.Context, phase string, work func()) {
+	if !Enabled(ctx) {
+		work()
+		return
+	}
+	start := time.Now()
+	emit(ctx, Event{Phase: phase, Kind: "start"})
+	defer func() {
+		if p := recover(); p != nil {
+			emit(ctx, Event{
+				Phase: phase, Kind: "cost", DurationMS: max(0, time.Since(start).Milliseconds()),
+				Outcome: "error", ErrorClass: syncqueue.ErrorClassUnknown,
+			})
+			panic(p)
+		}
+		Cost(ctx, phase, time.Since(start))
+	}()
+	work()
+}
+
 func Enabled(ctx context.Context) bool {
 	id, _ := ctx.Value(identityKey{}).(Identity)
 	return id.AccountID != "" || id.JobID != "" || id.RunID != ""

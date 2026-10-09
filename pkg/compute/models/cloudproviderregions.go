@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"time"
 
+	"yunion.io/x/cloudmux/pkg/cloudprovider"
 	"yunion.io/x/jsonutils"
 	"yunion.io/x/log"
 	"yunion.io/x/pkg/errors"
@@ -447,7 +448,12 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 		}()
 	}
 
-	driver, err := provider.GetProvider(ctx)
+	var driver cloudprovider.ICloudProvider
+	err = traceCloudSyncStage(ctx, "core_driver", func() error {
+		var fetchErr error
+		driver, fetchErr = provider.GetProvider(ctx)
+		return fetchErr
+	})
 	if err != nil {
 		log.Errorf("Failed to get driver, connection problem?")
 		return err
@@ -461,7 +467,12 @@ func (self *SCloudproviderregion) DoSync(ctx context.Context, userCred mcclient.
 	log.Debugf("need to do deep sync? ... %v, xor? ... %v", syncRange.DeepSync, syncRange.Xor)
 
 	if localRegion.isManaged() {
-		remoteRegion, err := driver.GetIRegionById(localRegion.ExternalId)
+		var remoteRegion cloudprovider.ICloudRegion
+		err := traceCloudSyncStage(ctx, "core_region", func() error {
+			var fetchErr error
+			remoteRegion, fetchErr = driver.GetIRegionById(localRegion.ExternalId)
+			return fetchErr
+		})
 		if err != nil {
 			return errors.Wrap(err, "GetIRegionById")
 		}
