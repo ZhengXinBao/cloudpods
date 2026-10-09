@@ -46,8 +46,7 @@ func syncElasticcaches(
 		if skipOptionalCloudSync(err, "GetIElasticcaches") {
 			return
 		}
-		msg := fmt.Sprintf("GetIElasticcaches for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
-		cloudSyncError(ctx, "%s", msg)
+		cloudSyncError(ctx, "GetIElasticcaches for region %s provider %s failed %s", remoteRegion.GetName(), provider.Name, err)
 		return
 	}
 
@@ -94,8 +93,7 @@ func syncElasticcacheParameters(ctx context.Context, userCred mcclient.TokenCred
 		return remoteInstance.GetICloudElasticcacheParameters()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("GetIElasticcacheParameters for dbinstance %s failed %s", remoteInstance.GetName(), err)
-		cloudSyncError(ctx, "%s", msg)
+		cloudSyncError(ctx, "GetIElasticcacheParameters for dbinstance %s failed %s", remoteInstance.GetName(), err)
 		return
 	}
 
@@ -118,8 +116,7 @@ func syncElasticcacheAccounts(ctx context.Context, userCred mcclient.TokenCreden
 		return remoteInstance.GetICloudElasticcacheAccounts()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("GetIElasticcacheAccounts for dbinstance %s failed %s", remoteInstance.GetName(), err)
-		cloudSyncError(ctx, "%s", msg)
+		cloudSyncError(ctx, "GetIElasticcacheAccounts for dbinstance %s failed %s", remoteInstance.GetName(), err)
 		return
 	}
 
@@ -139,11 +136,10 @@ func syncElasticcacheAcls(ctx context.Context, userCred mcclient.TokenCredential
 		return remoteInstance.GetICloudElasticcacheAcls()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("GetIElasticcacheAcls for dbinstance %s failed %v", remoteInstance.GetName(), err)
 		if errors.Cause(err) == cloudprovider.ErrNotSupported {
-			log.Warningf("%s", msg)
+			log.Warningf("GetIElasticcacheAcls for dbinstance %s failed %v", remoteInstance.GetName(), err)
 		} else {
-			cloudSyncError(ctx, "%s", msg)
+			cloudSyncError(ctx, "GetIElasticcacheAcls for dbinstance %s failed %v", remoteInstance.GetName(), err)
 		}
 		return
 	}
@@ -164,8 +160,7 @@ func syncElasticcacheBackups(ctx context.Context, userCred mcclient.TokenCredent
 		return remoteInstance.GetICloudElasticcacheBackups()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("GetIElasticcacheBackups for dbinstance %s failed %s", remoteInstance.GetName(), err)
-		cloudSyncError(ctx, "%s", msg)
+		cloudSyncError(ctx, "GetIElasticcacheBackups for dbinstance %s failed %s", remoteInstance.GetName(), err)
 		return
 	}
 
@@ -185,11 +180,10 @@ func syncElasticcacheSecgroups(ctx context.Context, userCred mcclient.TokenCrede
 		return remoteInstance.GetSecurityGroupIds()
 	}()
 	if err != nil {
-		msg := fmt.Sprintf("Elasticcache.GetSecurityGroupIds for dbinstance %s failed %s", remoteInstance.GetName(), err)
 		if errors.Cause(err) == cloudprovider.ErrNotSupported {
-			log.Warningf("%s", msg)
+			log.Warningf("Elasticcache.GetSecurityGroupIds for dbinstance %s failed %s", remoteInstance.GetName(), err)
 		} else {
-			cloudSyncError(ctx, "%s", msg)
+			cloudSyncError(ctx, "Elasticcache.GetSecurityGroupIds for dbinstance %s failed %s", remoteInstance.GetName(), err)
 		}
 		return
 	}

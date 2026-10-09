@@ -104,7 +104,30 @@ func (self *SyncResult) allErrorUnlocked() error {
 func (self *SyncResult) AllError() error {
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	return self.allErrorUnlocked()
+	return &syncResultErrors{
+		message: self.allErrorUnlocked().Error(),
+		causes:  append([]error(nil), self.errors...),
+	}
+}
+
+// Preserve original causes for opt-in classification while keeping the legacy
+// diagnostic, deduplication and errors.Is/Cause semantics unchanged.
+type syncResultErrors struct {
+	message string
+	causes  []error
+}
+
+func (e *syncResultErrors) Error() string { return e.message }
+func (e *syncResultErrors) Errors() []error {
+	return append([]error(nil), e.causes...)
+}
+
+// Errors returns a snapshot of the original causes before diagnostic formatting.
+// The slice is independent of the result; the contained errors are not cloned.
+func (self *SyncResult) Errors() []error {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	return append([]error(nil), self.errors...)
 }
 
 func (self *SyncResult) IsError() bool {

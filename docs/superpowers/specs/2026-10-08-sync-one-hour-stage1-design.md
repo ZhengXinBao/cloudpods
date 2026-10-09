@@ -3,7 +3,7 @@
 ## 状态与范围
 
 用户已批准按“腾讯慢任务定位 → AWS Bucket 优化 → 重试治理”的顺序推进。
-本文把已批准的方向落实为可独立验证、回滚的第一阶段设计，等待文档审阅。
+本文把已批准的方向落实为可独立验证、回滚的第一阶段设计；用户已审阅确认。
 本阶段不承诺完成全部一小时目标；后续仍需地域发现流水线和有依赖的任务分片。
 
 - Cloudpods 基线：`015b6a51eebd29bdf0a49ce0a3f2be9b7c6795d3`。
@@ -97,6 +97,8 @@ Bucket 更新把远端属性读取放在 `db.UpdateWithLock` 回调内，整个�
 5. Bucket 列表取数失败或未完整分页时禁止缺失资源删除；属性采集失败不等于对象消失。
 6. 保留完整对账的作用域互斥，不为了缩短对象写锁而直接取消 provider-region 集合锁。
    远端读取移出对象写锁，不宣称所有作用域锁都已移除。
+7. 完整对账使用严格的内部更新入口，未知统计仍报告失败；既有建桶、ACL、状态操作的
+   附带刷新仅忽略明确的独立“统计不完整”结果，不将已成功的操作误报失败，也不忽略数据库或组合错误。
 
 ### 有界并发作为独立补丁
 
@@ -123,7 +125,8 @@ Bucket 更新把远端属性读取放在 `db.UpdateWithLock` 回调内，整个�
 
 同一次已有 Bucket 更新只取一次统计；对象写锁内无远端 getter；失败统计不覆盖旧值。
 真实零值仍能更新；statsOnly 路径不增加其他远端取数。
-事件只反映实际已写入的统计变化，失败不会生成伪统计变化事件。
+事件依据本次写入的统计字段 diff，不使用可能包含其他操作结果的写后刷新值；
+未知统计不会生成伪统计变化事件。
 预取池覆盖并发上界、取消后停止派发、等待实际退出、每对象只派发一次和 race 检测。
 单纯请求数降低不是最终性能验收，还需对比 AWS 代表账号的耗时与数据完整性。
 
@@ -145,10 +148,31 @@ Bucket 更新把远端属性读取放在 `db.UpdateWithLock` 回调内，整个�
 
 错误收集器当前会格式化并截断正文；分类所需的结构化原因必须在格式化之前保留，
 同时限制存储大小。原始 error 不直接进入新增 trace 日志。
+已识别的 SDK 序列化格式只依据明确的 Code/ErrorCode 分类，不从 Message、Recommend、
+RequestId 或正文内嵌的 SDK 标签推断永久错误。旧 vendor 使用未转义分号拼接错误；
+当 SDK 正文与独立错误无法区分，或扁平消息包含破损正文时，必须稳定地保留 unknown，
+不能让字符串排列改变是否重试。不同资源、独立收集器和真实错误链中的永久类别仍保留；
+无法恢复的 SDK HTTP 状态不从正文猜测。普通非 SDK 文本仍兼容全部 500–599 服务端状态。
 需要支持的 SDK 接口仍必须修复；只有权威确认不适用的能力才可单列 N/A，且保留已有库存。
+
+### 2026-10-09 已批准的根因修正
+
+实际 `SSyncResultSet.Add` 与最终结果分类先后调用 `AllError()`，导致 SDK 类型和独立错误边界两次丢失。
+用户已批准依赖接口的小型扩展：在现有 `forks/pkg` 增加持锁、防御性拷贝的 `Errors() []error`，
+模型在 Add 格式化前保存有界类别摘要，最终分类读取真实错误/摘要而非格式化文本。
+`AllError()` 的私有聚合返回值也通过同一 `Errors()` 接口保留快照，显示、去重及空错误合同保持；
+不增加 Unwrap/Cause，避免改变可选能力跳过和 errors.Is 语义。收集器调用点直接传递原始错误实参，
+不在进入收集器前先用 fmt.Sprintf 丢失类型。
+AWS v1/v2、阿里云、腾讯必须通过真实 Add 链路回归；历史上已扁平的错误另保留兼容测试。
+仅镜像这一依赖源文件，并在发布前固定到对应 fork 提交及模块校验值，不批量更新 vendor。
+此批准同时允许经 JumpServer 发布到现有测试机 `10.20.30.43`，不免除排空、回滚和健康验证门禁。
 
 ### 文件边界
 
+- `/opt/tcl/cmp/forks/pkg/util/compare/syncresults.go` 与对应测试：只读原因快照接口。
+- `/opt/tcl/cmp/cloudpods/vendor/yunion.io/x/pkg/util/compare/syncresults.go`：精确镜像接口变更。
+- `/opt/tcl/cmp/cloudpods/pkg/compute/models/cloudproviderregions.go`：Add 在格式化前保留类别摘要。
+- `/opt/tcl/cmp/cloudpods/pkg/compute/models/cloudsync_causes_test.go`：真实生产聚合链路的 SDK 回归。
 - `/opt/tcl/cmp/cloudpods/pkg/compute/syncqueue/errors.go`：结构化分类与明确兼容策略。
 - `/opt/tcl/cmp/cloudpods/pkg/compute/syncqueue/errors_sdk_test.go`：类型、包装、正文误判及优先级测试。
 - `/opt/tcl/cmp/cloudpods/pkg/compute/models/cloudsync_errors.go`：分类信息穿过有界错误收集。
@@ -203,4 +227,4 @@ Bucket 更新把远端属性读取放在 `db.UpdateWithLock` 回调内，整个�
 - [x] 明确未知统计、部分失败、取消、集合锁、限流与所有权行为。
 - [x] 未将所有重试标为无效，未将 unsupported/permission 自动算作成功。
 - [x] 不以减少同步范围、快速失败或超时强制收尾达标。
-- [ ] 用户审阅本文后进入分项实现计划与测试驱动修改。
+- [x] 用户已审阅本文，进入分项实现计划与测试驱动修改。

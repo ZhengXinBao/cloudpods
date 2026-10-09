@@ -275,9 +275,7 @@ func ExecuteCloudSyncJob(ctx context.Context, cred mcclient.TokenCredential, job
 	}
 	if scope == "provider" {
 		err = SyncCloudproviderResources(ctx, cred, provider, &sr)
-		if err == nil {
-			err = failures.Error()
-		}
+		err = failures.Merge(err)
 		if endErr := provider.markEndSyncWithLock(ctx, cred, false); err == nil {
 			err = endErr
 		}
@@ -300,10 +298,7 @@ func ExecuteCloudSyncJob(ctx context.Context, cred mcclient.TokenCredential, job
 		ctx = context.WithValue(ctx, skipCloudSyncStatusKey{}, true)
 	}
 	err = region.DoSync(ctx, cred, sr)
-	if err == nil {
-		err = failures.Error()
-	}
-	return err
+	return failures.Merge(err)
 }
 
 // ResetIndependentSyncFailure clears legacy display flags while the caller still

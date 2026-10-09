@@ -430,4 +430,4 @@ replace inet.af/netaddr => github.com/inetaf/netaddr v0.0.0-20211027220019-c7495
 
 replace yunion.io/x/cloudmux => github.com/ZhengXinBao/cloudmux v0.3.10-0-alpha.1.0.20260928080059-674c5342544e
 
-replace yunion.io/x/pkg => github.com/ZhengXinBao/pkg v1.10.4-0.20260926164117-c99136a84f7f
+replace yunion.io/x/pkg => github.com/ZhengXinBao/pkg v1.10.4-0.20261009033653-fe0b3d3bb1c9

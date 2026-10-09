@@ -409,8 +409,8 @@ func (set SSyncResultSet) Add(manager db.IModelManager, result compare.SyncResul
 	res.UpdateErrCnt += result.UpdateErrCnt
 	res.DelCnt += result.DelCnt
 	res.DelErrCnt += result.DelErrCnt
-	if result.IsError() {
-		res.Error(result.AllError())
+	if cause := summarizeSyncResultErrors(&result); cause != nil {
+		res.Error(cause)
 	}
 }
 
