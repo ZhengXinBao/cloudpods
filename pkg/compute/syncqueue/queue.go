@@ -421,10 +421,7 @@ func (q *Queue) Complete(ctx context.Context, j *Job, executionErr error, maxAtt
 	message := ""
 	errorClass := ErrorClass("")
 	if executionErr != nil {
-		message = executionErr.Error()
-		if len(message) > 8192 {
-			message = message[:8192]
-		}
+		message = boundedErrorPrefix(executionErr.Error(), 8192)
 		errorClass = ClassifyError(executionErr)
 		state = Failed
 		if j.Attempts < maxAttempts && Retryable(errorClass) {

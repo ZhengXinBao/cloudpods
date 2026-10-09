@@ -98,12 +98,7 @@ func (c *CloudSyncErrors) add(message string, classes map[syncqueue.ErrorClass]i
 }
 
 func boundedCloudSyncMessage(message string) string {
-	if len(message) > 512 {
-		// Decoder errors often end with the actionable cause after a large
-		// response body. Keep both operation context and that cause bounded.
-		message = message[:256] + "..." + message[len(message)-256:]
-	}
-	return message
+	return syncqueue.BoundedErrorMessage(message, 512)
 }
 
 func syncResultSetError(results SSyncResultSet) error {

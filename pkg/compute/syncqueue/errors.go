@@ -56,9 +56,7 @@ func (e *classSummaryError) ErrorClassCounts() map[ErrorClass]int {
 // NewErrorSummary copies only a fixed vocabulary of counts and bounded text.
 // Classifications must be captured before the caller truncates diagnostics.
 func NewErrorSummary(message string, counts map[ErrorClass]int) error {
-	if len(message) > 8192 {
-		message = message[:4094] + "..." + message[len(message)-4095:]
-	}
+	message = BoundedErrorMessage(message, 8192)
 	e := &classSummaryError{message: message}
 	for i, class := range errorClassOrder {
 		if counts[class] > 0 {
